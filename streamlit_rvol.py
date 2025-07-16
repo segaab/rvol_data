@@ -342,7 +342,7 @@ def main():
     st_autorefresh(interval=3600000, key="rvol_autorefresh")  # Auto-refresh every hour
     st.title("RVol & Sector Score Charts for All Assets (Latest Day)")
     if st.button("Refresh Data Now"):
-        st.experimental_rerun()
+        st.rerun()
     filter_mode = st.sidebar.selectbox(
         "Activity Filter",
         ["All Activity", "Low Activity", "Sector Anomaly", "Asset Anomaly"]
