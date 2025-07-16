@@ -348,13 +348,18 @@ def fetch_2yr_sector_score_data(sector):
     return df
 
 def main():
+    # Add auto-refresh every hour (3600000 ms)
     st_autorefresh(interval=3600000, key="rvol_autorefresh")
     st.title("RVol & Sector Score Charts for All Assets (Latest Day)")
+    # Add manual refresh button
+    refresh = st.button("Refresh Data Now")
     filter_mode = st.sidebar.selectbox(
         "Activity Filter",
         ["All Activity", "Low Activity", "Sector Anomaly", "Asset Anomaly"]
     )
-    df = fetch_latest_full_day_rvol_data()
+    # Refetch data if button pressed or on rerun (auto-refresh)
+    if refresh or True:
+        df = fetch_latest_full_day_rvol_data()
     if df.empty:
         st.warning("No RVol data available.")
     # Asset RVol bar color logic
