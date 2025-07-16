@@ -1,8 +1,12 @@
-yahooquery
-pandas
-supabase
 streamlit
 plotly
+pandas
+python-dotenv
+pytz
+psycopg2-binary
 streamlit-autorefresh
-load_dotenv
-psycopg2
+yahooquery
+supabase
+postgrest
+requests
+numpy
