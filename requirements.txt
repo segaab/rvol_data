@@ -5,3 +5,4 @@ streamlit
 plotly
 streamlit-autorefresh
 load_dotenv
+psycopg2
