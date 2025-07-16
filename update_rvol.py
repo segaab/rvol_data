@@ -75,7 +75,7 @@ def get_supabase_client():
 def fetch_and_process_ticker(name, symbol):
     print(f"Fetching data for {name} ({symbol})...")
     t = Ticker(symbol, timeout=60)
-    hist = t.history(period="730d", interval="1h")
+    hist = t.history(period="730d", interval="1h")  # 2 years of 1-hour data
     if hist.empty:
         print(f"No data for {symbol}")
         return None
@@ -85,7 +85,16 @@ def fetch_and_process_ticker(name, symbol):
     hist["avg_volume"] = hist["volume"].rolling(ROLLING_WINDOW).mean()
     hist["rvol"] = hist["volume"] / hist["avg_volume"]
     hist["name"] = name
-    # Format date as 'DD Mon YYYY, HH:MM'
+    # Do NOT format date yet!
+    hist = hist.replace([float('inf'), float('-inf')], pd.NA)
+    hist = hist.dropna(subset=["avg_volume", "rvol", "volume", "date"])
+    hist = hist[hist["volume"] > 0]
+    # Sort by datetime and keep all valid rows (latest 2 years)
+    hist = hist.sort_values("date")
+    if hist.empty:
+        print(f"No valid data to insert for {name} ({symbol}).")
+        return None
+    # Now format date for Supabase
     def format_friendly_date(x):
         if hasattr(x, "strftime"):
             return x.strftime("%d %b %Y, %H:%M")
@@ -95,15 +104,6 @@ def fetch_and_process_ticker(name, symbol):
         except Exception:
             return str(x)
     hist["date"] = hist["date"].apply(format_friendly_date)
-    hist = hist.replace([float('inf'), float('-inf')], pd.NA)
-    hist = hist.dropna(subset=["avg_volume", "rvol", "volume", "date"])
-    # If latest entry has no volume, drop just that row and warn
-    if not hist.empty and (pd.isna(hist.iloc[-1]["volume"]) or hist.iloc[-1]["volume"] == 0):
-        print(f"Warning: Skipping latest entry for {name} ({symbol}) due to missing volume.")
-        hist = hist.iloc[:-1]
-    if hist.empty:
-        print(f"No valid data to insert for {name} ({symbol}).")
-        return None
     return hist[["ticker", "name", "date", "volume", "avg_volume", "rvol"]]
 
 # --- Upsert multiple rows into Supabase ---
@@ -135,49 +135,45 @@ def calculate_and_insert_sector_scores(df, supabase):
     asset_category_map = load_json("asset_category_map.json")
     asset_etf_map = load_json("asset_etf_map.json")
     for sector, assets in asset_category_map.items():
-        # Use the first asset's ETF as the sector ETF
         etf_symbol = asset_etf_map[assets[0]][0] if assets[0] in asset_etf_map else None
         sector_df = df[df["ticker"].isin(assets)]
         if sector_df.empty or not etf_symbol:
             continue
-        latest_day = sector_df["date"].dt.date.max()
-        day_df = sector_df[sector_df["date"].dt.date == latest_day].copy()
-        if day_df.empty:
-            continue
-        for hour in sorted(day_df["date"].dt.hour.unique()):
-            hour_df = day_df[day_df["date"].dt.hour == hour]
-            mean_asset_rvol = hour_df["rvol"].mean()
-            etf_rvol = None
-            etf_df = df[(df["ticker"] == etf_symbol) & (df["date"].dt.date == latest_day) & (df["date"].dt.hour == hour)]
-            if not etf_df.empty:
-                etf_rvol = etf_df["rvol"].mean()
-            if etf_rvol is not None and not pd.isna(mean_asset_rvol):
-                sector_score = 0.4 * etf_rvol + 0.6 * mean_asset_rvol
-                record = {
-                    "sector": sector,
-                    "date": str(latest_day),
-                    "hour": int(hour),
-                    "etf_rvol": float(etf_rvol),
-                    "mean_asset_rvol": float(mean_asset_rvol),
-                    "sector_score": float(sector_score)
-                }
-                supabase.table("sector_score_data").insert(record).execute()
-                print(f"Inserted sector score for {sector} {latest_day} hour {hour}: {sector_score}")
+        # Loop over all unique days in the sector's data
+        sector_df["date"] = pd.to_datetime(sector_df["date"], errors="coerce")
+        for day in sorted(sector_df["date"].dt.date.unique()):
+            day_df = sector_df[sector_df["date"].dt.date == day].copy()
+            if day_df.empty:
+                continue
+            for hour in sorted(day_df["date"].dt.hour.unique()):
+                hour_df = day_df[day_df["date"].dt.hour == hour]
+                mean_asset_rvol = hour_df["rvol"].mean()
+                etf_rvol = None
+                etf_df = df[(df["ticker"] == etf_symbol) & (pd.to_datetime(df["date"], errors="coerce").dt.date == day) & (pd.to_datetime(df["date"], errors="coerce").dt.hour == hour)]
+                if not etf_df.empty:
+                    etf_rvol = etf_df["rvol"].mean()
+                if etf_rvol is not None and not pd.isna(mean_asset_rvol):
+                    sector_score = 0.4 * etf_rvol + 0.6 * mean_asset_rvol
+                    record = {
+                        "sector": sector,
+                        "date": str(day),
+                        "hour": int(hour),
+                        "etf_rvol": float(etf_rvol),
+                        "mean_asset_rvol": float(mean_asset_rvol),
+                        "sector_score": float(sector_score)
+                    }
+                    try:
+                        supabase.table("sector_score_data").insert(record).execute()
+                        print(f"Inserted sector score for {sector} {day} hour {hour}: {sector_score}")
+                    except Exception as e:
+                        if "duplicate key value violates unique constraint" in str(e):
+                            print(f"Duplicate sector score for {sector} {day} hour {hour}, skipping.")
+                        else:
+                            print(f"Error inserting sector score for {sector} {day} hour {hour}: {e}")
 
 # --- Main script ---
 def main():
     supabase = get_supabase_client()
-    # Delete all rows from rvol_data and sector_score_data before loading new data
-    try:
-        supabase.table("rvol_data").delete().neq("ticker", "").execute()
-        print("All rows deleted from rvol_data.")
-    except Exception as e:
-        print(f"Error deleting all rows from rvol_data: {e}")
-    try:
-        supabase.table("sector_score_data").delete().neq("sector", "").execute()
-        print("All rows deleted from sector_score_data.")
-    except Exception as e:
-        print(f"Error deleting all rows from sector_score_data: {e}")
     # Fetch and insert for assets
     for name, symbol in TICKER_MAP.items():
         try:

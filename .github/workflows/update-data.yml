@@ -1,0 +1,36 @@
+name: Update RVol and Sector Score
+
+on:
+  schedule:
+    # Runs every hour at minute 5
+    - cron: '5 * * * *'
+  workflow_dispatch:
+
+jobs:
+  update:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repo
+        uses: actions/checkout@v3
+
+      - name: Set up Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: '3.11'
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+
+      - name: Load .env file
+        run: |
+          set -a
+          source .env
+          set +a
+
+      - name: Run update_rvol_latest.py
+        run: python update_rvol_latest.py
+
+      - name: Run update_sector_score_latest.py
+        run: python update_sector_score_latest.py 

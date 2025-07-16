@@ -6,8 +6,8 @@ import os
 from datetime import datetime
 
 load_dotenv()
-SUPABASE_URL = os.getenv("SUPABASE_URL")
-SUPABASE_KEY = os.getenv("SUPABASE_SERVICE_ROLE_KEY")
+SUPABASE_URL = os.getenv("SUPABASE_URL") or ""
+SUPABASE_KEY = os.getenv("SUPABASE_SERVICE_ROLE_KEY") or ""
 
 def get_supabase_client():
     return create_client(SUPABASE_URL, SUPABASE_KEY)
@@ -16,25 +16,28 @@ def load_json(filename):
     with open(filename, "r") as f:
         return json.load(f)
 
-def fetch_latest_hour_rvol_data(supabase):
-    response = supabase.table("rvol_data").select("ticker, date, rvol").order("date", desc=True).execute()
+def fetch_last_24_hours_rvol_data(supabase):
+    response = supabase.table("rvol_data").select("ticker, date, rvol").order("date", desc=True).limit(10000).execute()
     df = pd.DataFrame(response.data)
     if df.empty:
-        return df
+        return []
     df["date"] = pd.to_datetime(df["date"], errors="coerce")
     df = df.dropna(subset=["date", "rvol"])
     df["rvol"] = df["rvol"].astype(float)
-    # Find the latest complete hour (exclude the very latest hour, which may be incomplete)
     latest_day = df["date"].dt.date.max()
     day_df = df[df["date"].dt.date == latest_day].copy()
     if day_df.empty:
-        return pd.DataFrame()
-    sorted_hours = sorted(day_df["date"].dt.hour.unique())
-    if len(sorted_hours) < 2:
-        return pd.DataFrame()
-    latest_complete_hour = sorted_hours[-2]  # Exclude the very latest hour
-    hour_df = day_df[day_df["date"].dt.hour == latest_complete_hour].copy()
-    return hour_df, latest_day, latest_complete_hour
+        return []
+    hours_series = day_df["date"].dt.hour
+    sorted_hours = sorted(hours_series.unique())
+    if len(sorted_hours) < 24:
+        return []
+    hours_to_process = sorted_hours[-24:]
+    hour_dfs = []
+    for hour in hours_to_process:
+        hour_df = day_df[hours_series == hour].copy()
+        hour_dfs.append((hour_df, latest_day, hour))
+    return hour_dfs
 
 def calculate_and_insert_latest_sector_scores(hour_df, latest_day, latest_complete_hour, supabase):
     asset_category_map = load_json("asset_category_map.json")
@@ -59,14 +62,22 @@ def calculate_and_insert_latest_sector_scores(hour_df, latest_day, latest_comple
                 "mean_asset_rvol": float(mean_asset_rvol),
                 "sector_score": float(sector_score)
             }
-            supabase.table("sector_score_data").insert(record).execute()
-            print(f"Inserted sector score for {sector} {latest_day} hour {latest_complete_hour}: {sector_score}")
+            try:
+                supabase.table("sector_score_data").insert(record).execute()
+                print(f"Inserted sector score for {sector} {latest_day} hour {latest_complete_hour}: {sector_score}")
+            except Exception as e:
+                if "duplicate key value violates unique constraint" in str(e):
+                    print(f"Duplicate sector score for {sector} {latest_day} hour {latest_complete_hour}, skipping.")
+                else:
+                    print(f"Error inserting sector score for {sector} {latest_day} hour {latest_complete_hour}: {e}")
 
 def main():
     supabase = get_supabase_client()
-    hour_df, latest_day, latest_complete_hour = fetch_latest_hour_rvol_data(supabase)
-    if hour_df is not None and not hour_df.empty:
-        calculate_and_insert_latest_sector_scores(hour_df, latest_day, latest_complete_hour, supabase)
+    hour_dfs = fetch_last_24_hours_rvol_data(supabase)
+    if hour_dfs:
+        for hour_df, latest_day, hour in hour_dfs:
+            if hour_df is not None and isinstance(hour_df, pd.DataFrame) and not hour_df.empty:
+                calculate_and_insert_latest_sector_scores(hour_df, latest_day, hour, supabase)
     else:
         print("No complete hour data available for sector score update.")
 

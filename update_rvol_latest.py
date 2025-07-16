@@ -50,10 +50,10 @@ def format_friendly_date(x):
     except Exception:
         return str(x)
 
-def fetch_latest_with_volume(name, symbol):
-    print(f"Fetching latest 1H data for {name} ({symbol})...")
+def fetch_last_24h_with_volume(name, symbol):
+    print(f"Fetching last 24H data for {name} ({symbol})...")
     t = Ticker(symbol, timeout=60)
-    hist = t.history(period="7d", interval="1h")
+    hist = t.history(period="2d", interval="1h")
     if hist.empty:
         print(f"No data for {symbol}")
         return None
@@ -66,27 +66,32 @@ def fetch_latest_with_volume(name, symbol):
     hist["date"] = hist["date"].apply(format_friendly_date)
     hist = hist.replace([float('inf'), float('-inf')], pd.NA)
     hist = hist.dropna(subset=["avg_volume", "rvol", "volume", "date"])
-    # Get the latest row with volume > 0
-    hist_nonzero = hist[hist["volume"] > 0]
-    if hist_nonzero.empty:
+    hist = hist[hist["volume"] > 0]
+    hist = hist.sort_values("date").iloc[-24:]
+    if hist.empty:
         print(f"No recent nonzero volume data for {name} ({symbol})")
         return None
-    latest = hist_nonzero.iloc[[-1]][["ticker", "name", "date", "volume", "avg_volume", "rvol"]]
-    return latest
+    return hist[["ticker", "name", "date", "volume", "avg_volume", "rvol"]]
 
-def upsert_single_row(df, supabase):
-    record = df.to_dict(orient="records")[0]
-    record["volume"] = int(record["volume"]) if not pd.isna(record["volume"]) else None
+def upsert_multiple_rows(df, supabase):
+    records = df.to_dict(orient="records")
+    for record in records:
+        record["volume"] = int(record["volume"]) if not pd.isna(record["volume"]) else None
     try:
-        result = supabase.table("rvol_data").insert(record).execute()
+        result = supabase.table("rvol_data").insert(records).execute()
         print("Insert result:", result)
     except APIError as e:
-        if "duplicate key value violates unique constraint" in str(e):
-            print(f"Duplicate found for {record['ticker']} {record['date']}, skipping.")
-        elif "invalid input syntax for type bigint" in str(e):
-            print(f"Invalid volume for {record['ticker']} {record['date']}, skipping.")
-        else:
-            raise
+        print("Error inserting records:", e)
+        for record in records:
+            try:
+                supabase.table("rvol_data").insert(record).execute()
+            except APIError as e2:
+                if "duplicate key value violates unique constraint" in str(e2):
+                    print(f"Duplicate found for {record['ticker']} {record['date']}, skipping.")
+                elif "invalid input syntax for type bigint" in str(e2):
+                    print(f"Invalid volume for {record['ticker']} {record['date']}, skipping.")
+                else:
+                    raise
 
 # FIFO deletion: keep only entries from the last 2 years for each asset (optional, can be removed if not needed)
 def delete_older_than_2_years(supabase, symbol):
@@ -103,11 +108,10 @@ def main():
     supabase = get_supabase_client()
     for name, symbol in TICKER_MAP.items():
         try:
-            df = fetch_latest_with_volume(name, symbol)
+            df = fetch_last_24h_with_volume(name, symbol)
             if df is not None:
-                print("Fetched row:")
-                print(df)
-                upsert_single_row(df, supabase)
+                print(f"Fetched {len(df)} rows for {name} ({symbol})")
+                upsert_multiple_rows(df, supabase)
             delete_older_than_2_years(supabase, symbol)
         except Exception as e:
             print(f"Error processing {name} ({symbol}): {e}")
