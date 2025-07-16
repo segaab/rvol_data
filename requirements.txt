@@ -3,3 +3,5 @@ pandas
 supabase
 streamlit
 plotly
+streamlit-autorefresh
+load_dotenv
