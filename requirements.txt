@@ -1,0 +1,5 @@
+yahooquery
+pandas
+supabase
+streamlit
+plotly
