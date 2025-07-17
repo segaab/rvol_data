@@ -6,15 +6,20 @@
     "6C=F",
     "6B=F",
     "6N=F",
-    "6S=F",
-    "DX-Y.NYB"
+    "6S=F"
   ],
   "Metals": [
     "GC=F",
-    "SI=F"
+    "SI=F",
+    "PL=F",
+    "PA=F",
+    "HG=F",
+    "ALI=F"
   ],
   "Energy": [
-    "CL=F"
+    "CL=F",
+    "NG=F",
+    "BZ=F"
   ],
   "Crypto": [
     "BTC-USD",

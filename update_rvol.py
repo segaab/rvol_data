@@ -3,10 +3,13 @@ from yahooquery import Ticker
 import yahooquery
 from supabase._sync.client import create_client
 import os
-from datetime import datetime
+from datetime import datetime, timedelta, timezone
 from dotenv import load_dotenv
 from postgrest.exceptions import APIError
 import json
+from concurrent.futures import ThreadPoolExecutor, as_completed
+import time
+import numpy as np
 
 # Load environment variables from .env file
 load_dotenv()
@@ -72,13 +75,26 @@ def get_supabase_client():
     return create_client(SUPABASE_URL, SUPABASE_KEY)
 
 # --- Fetch and process 2 years of 1-hour data for a single ticker ---
-def fetch_and_process_ticker(name, symbol):
+def fetch_and_process_ticker(name, symbol, max_retries=3):
     print(f"Fetching data for {name} ({symbol})...")
+    
+    for attempt in range(max_retries):
+        try:
     t = Ticker(symbol, timeout=60)
     hist = t.history(period="730d", interval="1h")  # 2 years of 1-hour data
     if hist.empty:
         print(f"No data for {symbol}")
         return None
+            break  # Success, exit retry loop
+        except Exception as e:
+            if attempt < max_retries - 1:
+                wait_time = (attempt + 1) * 5  # Exponential backoff: 5s, 10s, 15s
+                print(f"Attempt {attempt + 1} failed for {symbol}: {e}. Retrying in {wait_time}s...")
+                time.sleep(wait_time)
+            else:
+                print(f"All {max_retries} attempts failed for {symbol}: {e}")
+                return None
+    
     if isinstance(hist.index, pd.MultiIndex):
         hist = hist.reset_index()
     hist = hist.rename(columns={"symbol": "ticker"})
@@ -90,21 +106,15 @@ def fetch_and_process_ticker(name, symbol):
     hist = hist.dropna(subset=["avg_volume", "rvol", "volume", "date"])
     hist = hist[hist["volume"] > 0]
     # Sort by datetime and keep all valid rows (latest 2 years)
-    hist = hist.sort_values("date")
+    if isinstance(hist, pd.DataFrame) and "date" in hist.columns:
+        hist = hist.sort_values(by="date")
     if hist.empty:
         print(f"No valid data to insert for {name} ({symbol}).")
         return None
-    # Now format date for Supabase
-    def format_friendly_date(x):
-        if hasattr(x, "strftime"):
-            return x.strftime("%d %b %Y, %H:%M")
-        try:
-            dt = pd.to_datetime(x)
-            return dt.strftime("%d %b %Y, %H:%M")
-        except Exception:
-            return str(x)
-    hist["date"] = hist["date"].apply(format_friendly_date)
-    return hist[["ticker", "name", "date", "volume", "avg_volume", "rvol"]]
+    # Format datetime as UTC ISO8601 string
+    hist["datetime"] = pd.to_datetime(hist["date"], errors="coerce", utc=True)
+    hist["datetime"] = hist["datetime"].dt.strftime("%Y-%m-%dT%H:%M:%SZ")
+    return hist[["ticker", "name", "datetime", "volume", "avg_volume", "rvol"]]
 
 # --- Upsert multiple rows into Supabase ---
 def upsert_multiple_rows(df, supabase):
@@ -121,85 +131,76 @@ def upsert_multiple_rows(df, supabase):
                 supabase.table("rvol_data").insert(record).execute()
             except APIError as e2:
                 if "duplicate key value violates unique constraint" in str(e2):
-                    print(f"Duplicate found for {record['ticker']} {record['date']}, skipping.")
+                    print(f"Duplicate found for {record['ticker']} {record['datetime']}, skipping.")
                 elif "invalid input syntax for type bigint" in str(e2):
-                    print(f"Invalid volume for {record['ticker']} {record['date']}, skipping.")
+                    print(f"Invalid volume for {record['ticker']} {record['datetime']}, skipping.")
                 else:
                     raise
+
+def upsert_multiple_rows_batched(df, supabase, batch_size=200):
+    # Ensure volume is int and not float string
+    if isinstance(df, pd.DataFrame) and "volume" in df.columns:
+        vol = pd.Series(df["volume"])
+        vol = pd.to_numeric(vol, errors="coerce")
+        if isinstance(vol, pd.Series):
+            vol = vol.fillna(0).astype(int)
+        df["volume"] = vol
+    records = df.to_dict(orient="records")
+    for i in range(0, len(records), batch_size):
+        batch = records[i:i+batch_size]
+        try:
+            result = supabase.table("rvol_data").insert(batch).execute()
+            print(f"Inserted batch {i//batch_size+1}: {len(batch)} rows")
+        except APIError as e:
+            print("Error inserting batch:", e)
+        time.sleep(1)  # Add a short delay to avoid server disconnects
+
+# Threaded fetch/process for one asset
+def fetch_and_insert_asset(args):
+    name, symbol, supabase = args
+    try:
+        df = fetch_and_process_ticker(name, symbol)
+        if df is not None:
+            print(f"Fetched {len(df)} rows for {name} ({symbol})")
+            upsert_multiple_rows_batched(df, supabase)
+        return name, symbol, len(df) if df is not None else 0
+    except Exception as e:
+        print(f"Error processing {name} ({symbol}): {e}")
+        return name, symbol, 0
 
 def load_json(filename):
     with open(filename, "r") as f:
         return json.load(f)
 
-def calculate_and_insert_sector_scores(df, supabase):
-    asset_category_map = load_json("asset_category_map.json")
-    asset_etf_map = load_json("asset_etf_map.json")
-    for sector, assets in asset_category_map.items():
-        etf_symbol = asset_etf_map[assets[0]][0] if assets[0] in asset_etf_map else None
-        sector_df = df[df["ticker"].isin(assets)]
-        if sector_df.empty or not etf_symbol:
-            continue
-        # Loop over all unique days in the sector's data
-        sector_df["date"] = pd.to_datetime(sector_df["date"], errors="coerce")
-        for day in sorted(sector_df["date"].dt.date.unique()):
-            day_df = sector_df[sector_df["date"].dt.date == day].copy()
-            if day_df.empty:
-                continue
-            for hour in sorted(day_df["date"].dt.hour.unique()):
-                hour_df = day_df[day_df["date"].dt.hour == hour]
-                mean_asset_rvol = hour_df["rvol"].mean()
-                etf_rvol = None
-                etf_df = df[(df["ticker"] == etf_symbol) & (pd.to_datetime(df["date"], errors="coerce").dt.date == day) & (pd.to_datetime(df["date"], errors="coerce").dt.hour == hour)]
-                if not etf_df.empty:
-                    etf_rvol = etf_df["rvol"].mean()
-                if etf_rvol is not None and not pd.isna(mean_asset_rvol):
-                    sector_score = 0.4 * etf_rvol + 0.6 * mean_asset_rvol
-                    record = {
-                        "sector": sector,
-                        "date": str(day),
-                        "hour": int(hour),
-                        "etf_rvol": float(etf_rvol),
-                        "mean_asset_rvol": float(mean_asset_rvol),
-                        "sector_score": float(sector_score)
-                    }
-                    try:
-                        supabase.table("sector_score_data").insert(record).execute()
-                        print(f"Inserted sector score for {sector} {day} hour {hour}: {sector_score}")
-                    except Exception as e:
-                        if "duplicate key value violates unique constraint" in str(e):
-                            print(f"Duplicate sector score for {sector} {day} hour {hour}, skipping.")
-                        else:
-                            print(f"Error inserting sector score for {sector} {day} hour {hour}: {e}")
-
 # --- Main script ---
 def main():
     supabase = get_supabase_client()
-    # Fetch and insert for assets
-    for name, symbol in TICKER_MAP.items():
-        try:
-            df = fetch_and_process_ticker(name, symbol)
-            if df is not None:
-                print(f"Fetched {len(df)} rows for {name} ({symbol})")
-                upsert_multiple_rows(df, supabase)
-        except Exception as e:
-            print(f"Error processing {name} ({symbol}): {e}")
-    # Fetch and insert for ETFs
+    tickers = list(TICKER_MAP.items())
+    # Parallel fetch/process, but batch insert per asset
+    with ThreadPoolExecutor(max_workers=1) as executor:  # Reduced to 1 worker to avoid API rate limits
+        futures = [executor.submit(fetch_and_insert_asset, (name, symbol, supabase)) for name, symbol in tickers]
+        for future in as_completed(futures):
+            name, symbol, nrows = future.result()
+            print(f"Done: {name} ({symbol}) - {nrows} rows processed.")
+            time.sleep(2)  # Add delay between assets to avoid rate limiting
+    # Fetch and insert for ETFs (sequentially, or you can parallelize similarly)
     for fut_symbol, (etf_symbol, etf_name) in ETF_MAP.items():
         try:
             df = fetch_and_process_ticker(etf_name, etf_symbol)
             if df is not None:
                 print(f"Fetched {len(df)} rows for {etf_name} ({etf_symbol})")
-                upsert_multiple_rows(df, supabase)
+                if isinstance(df, pd.DataFrame) and "volume" in df.columns:
+                    vol = pd.Series(df["volume"])
+                    vol = pd.to_numeric(vol, errors="coerce")
+                    if isinstance(vol, pd.Series):
+                        vol = vol.fillna(0).astype(int)
+                    df["volume"] = vol
+                upsert_multiple_rows_batched(df, supabase)
         except Exception as e:
             print(f"Error processing ETF {etf_name} ({etf_symbol}): {e}")
-    # Calculate and insert sector scores
-    response = supabase.table("rvol_data").select("ticker, date, rvol").execute()
-    df = pd.DataFrame(response.data)
-    if not df.empty:
-        df["date"] = pd.to_datetime(df["date"], errors="coerce")
-        df = df.dropna(subset=["date", "rvol"])
-        df["rvol"] = df["rvol"].astype(float)
-        calculate_and_insert_sector_scores(df, supabase)
+            continue  # Continue with next ETF even if one fails
+        time.sleep(2)  # Add delay between ETF fetches to avoid rate limiting
+    # Sector score calculation and insertion removed
 
 if __name__ == "__main__":
     main() 
