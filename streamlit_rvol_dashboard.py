@@ -71,6 +71,49 @@ ASSET_TO_SECTOR = {asset: sector for sector, assets in ASSET_CATEGORY_MAP.items(
 TICKER_TO_NAME = {v: k for k, v in TICKER_MAP.items()}
 
 st.title("RVol Monitor")
+if st.button("Rerun"):
+    st.rerun()
+
+# Add Streamlit controls for gap up detection
+st.sidebar.header("Gap Up RVol Filter")
+market_open = st.sidebar.selectbox(
+    "Select Market Open Window:",
+    ["London (10:00-11:00)", "NY (16:00-17:00)"]
+)
+gap_threshold = st.sidebar.number_input(
+    "Gap Up Threshold (ratio, e.g. 1.5 = 50% higher)", min_value=1.0, max_value=10.0, value=1.5, step=0.1
+)
+
+# Determine which hours to use for market open
+if market_open.startswith("London"):
+    open_hours = [10, 11]
+else:
+    open_hours = [16, 17]
+
+def detect_gap_up(df, open_hours, threshold):
+    if df.empty:
+        return False, None, None
+    df = df.copy()
+    df["datetime_gmt3_dt"] = pd.to_datetime(df["datetime_gmt3"], errors="coerce")
+    df = df.dropna(subset=["datetime_gmt3_dt"])
+    df = df.sort_values("datetime_gmt3_dt", ascending=False)
+    df["date_gmt3"] = df["datetime_gmt3_dt"].dt.date
+    df["hour_gmt3"] = df["datetime_gmt3_dt"].dt.hour
+    if df.empty:
+        return False, None, None
+    latest_day = df.iloc[0]["date_gmt3"]
+    prev_day = latest_day - pd.Timedelta(days=1)
+    # Get rvol for open hours for both days
+    curr_open = df[(df["date_gmt3"] == latest_day) & (df["hour_gmt3"].isin(open_hours))]["rvol"]
+    prev_open = df[(df["date_gmt3"] == prev_day) & (df["hour_gmt3"].isin(open_hours))]["rvol"]
+    if curr_open.empty or prev_open.empty:
+        return False, None, None
+    curr_mean = curr_open.mean()
+    prev_mean = prev_open.mean()
+    if prev_mean == 0 or pd.isna(prev_mean):
+        return False, curr_mean, prev_mean
+    gap_ratio = curr_mean / prev_mean
+    return gap_ratio >= threshold, curr_mean, prev_mean
 
 @st.cache_data(show_spinner=True)
 def fetch_rvol_data(symbol):
@@ -106,11 +149,16 @@ def fetch_all_etf_data():
 # Trigger ETF data fetch in the background
 _ = fetch_all_etf_data()
 
-# Display all assets
+# Display all assets with gap up filter
 for symbol in asset_symbols:
     asset_name = TICKER_TO_NAME.get(symbol, symbol)
     df = fetch_rvol_data(symbol)
+    # Gap up detection
+    is_gap, curr_open_rvol, prev_open_rvol = detect_gap_up(df, open_hours, gap_threshold)
+    if not is_gap:
+        continue  # Skip assets that do not meet the gap up threshold
     st.subheader(f"{asset_name} ({symbol})")
+    st.caption(f"Gap up detected: Current open rvol = {curr_open_rvol:.2f}, Previous open rvol = {prev_open_rvol:.2f}, Ratio = {curr_open_rvol/prev_open_rvol:.2f}")
     if df.empty:
         st.warning(f"No data found for {asset_name} ({symbol}).")
     else:
