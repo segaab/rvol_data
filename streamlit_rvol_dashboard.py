@@ -78,7 +78,7 @@ if st.button("Rerun"):
 st.sidebar.header("Gap Up RVol Filter")
 market_open = st.sidebar.selectbox(
     "Select Market Open Window:",
-    ["London (10:00-11:00)", "NY (16:00-17:00)"]
+    ["London (10:00-11:00)", "NY (16:00-17:00)", "Asian (3:00-4:00)"]
 )
 gap_threshold = st.sidebar.number_input(
     "Gap Up Threshold (ratio, e.g. 1.5 = 50% higher)", min_value=1.0, max_value=10.0, value=1.5, step=0.1
@@ -87,6 +87,10 @@ gap_threshold = st.sidebar.number_input(
 # Determine which hours to use for market open
 if market_open.startswith("London"):
     open_hours = [10, 11]
+elif market_open.startswith("NY"):
+    open_hours = [16, 17]
+elif market_open.startswith("Asian"):
+    open_hours = [3, 4]
 else:
     open_hours = [16, 17]
 
