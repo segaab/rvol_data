@@ -117,6 +117,7 @@ def detect_gap_up(df, open_hours, threshold):
     if prev_mean == 0 or pd.isna(prev_mean):
         return False, curr_mean, prev_mean
     gap_ratio = curr_mean / prev_mean
+    print(f"Asian Open Debug: curr_open={curr_open}, prev_open={prev_open}, curr_mean={curr_mean}, prev_mean={prev_mean}, gap_ratio={gap_ratio}")
     return gap_ratio >= threshold, curr_mean, prev_mean
 
 @st.cache_data(show_spinner=True)
