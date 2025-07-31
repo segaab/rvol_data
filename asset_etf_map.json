@@ -23,5 +23,6 @@
   "ES=F": ["SPY"],
   "NQ=F": ["QQQ"],
   "^N225": ["EWJ"],
-  "SPY": ["SPY"]
+  "SPY": ["SPY"],
+  "HG=F":["CPER"]
 } 
