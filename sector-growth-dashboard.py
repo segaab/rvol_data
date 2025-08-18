@@ -4,14 +4,12 @@ import numpy as np
 from yahooquery import Ticker
 import plotly.graph_objects as go
 from plotly.subplots import make_subplots
-from datetime import datetime, timedelta
+from datetime import datetime
 import warnings
 
 warnings.filterwarnings('ignore')
 
-# -----------------------------
 # Hide GitHub Icon
-# -----------------------------
 hide_github_icon = """
 <style>
 #GithubIcon {
@@ -21,82 +19,79 @@ hide_github_icon = """
 """
 st.markdown(hide_github_icon, unsafe_allow_html=True)
 
-# -----------------------------
-# Streamlit page config
-# -----------------------------
 st.set_page_config(
     page_title="Sector Wave & Negative Space Dashboard",
     page_icon="📊",
     layout="wide"
 )
+
 st.title("📊 Sector Wave & Negative Space Dashboard")
-st.markdown("**Sector Growth Strategy Backtest**")
 
 # -----------------------------
 # 1. Sector & Ticker Mapping
 # -----------------------------
 SECTORS = {
     "Information Technology": {
-        "AI": ["Stock A", "Stock B", "Stock C", "Stock D"],
-        "Cloud Computing": ["Stock E", "Stock F", "Stock G", "Stock H"],
-        "Cybersecurity": ["Stock I", "Stock J", "Stock K", "Stock L"]
+        "AI": ["NVDA", "AMD", "PLTR", "SMCI", "SNOW", "AVGO"],
+        "Cloud Computing": ["AMZN", "MSFT", "NET", "ORCL", "SMCI", "PLTR"],
+        "Cybersecurity": ["CRWD", "ZS", "FTNT", "CYBR", "FFIV", "AVGO"]
     },
     "Healthcare": {
-        "Telemedicine": ["Stock M", "Stock N", "Stock O", "Stock P"],
-        "Biotechnology": ["Stock Q", "Stock R", "Stock S", "Stock T"],
-        "Medical Devices": ["Stock U", "Stock V", "Stock W", "Stock X"]
+        "Telemedicine": ["TDOC", "DOCS", "AMWL", "PINC", "PHR", "IRTC"],
+        "Biotechnology": ["MRNA", "REGN", "VRTX", "BTAI", "TNXP", "SNGX"],
+        "Medical Devices": ["BSX", "MDT", "ABT", "SNN", "ZBH", "MASI"]
     },
     "Energy": {
-        "Renewable Energy": ["Stock Y", "Stock Z", "Stock AA", "Stock AB"],
-        "Energy Storage": ["Stock AC", "Stock AD", "Stock AE", "Stock AF"]
+        "Renewable Energy": ["NEE", "FSLR", "BEP", "ENLT", "RNW", "CEG"],
+        "Energy Storage": ["STEM", "BE", "AEE", "CMS", "CEG", "ENPH"]
     },
     "Financials": {
-        "Fintech": ["Stock AG", "Stock AH", "Stock AI", "Stock AJ"]
+        "Fintech": ["SQ", "SOFI", "PYPL", "TW", "HOOD", "IBKR"]
     },
     "Consumer Discretionary": {
-        "E-commerce": ["Stock AK", "Stock AL", "Stock AM", "Stock AN"],
-        "Electric Vehicles": ["Stock AO", "Stock AP", "Stock AQ", "Stock AR"]
+        "E-commerce": ["AMZN", "SHOP", "WMT", "PYPL", "CVNA", "GRPN"],
+        "Electric Vehicles": ["TSLA", "BYDDY", "NIO", "VWAGY", "RIVN", "LCID"]
     },
     "Industrials": {
-        "Robotics & Automation": ["Stock AS", "Stock AT", "Stock AU", "Stock AV"],
-        "Aerospace Technology": ["Stock AW", "Stock AX", "Stock AY", "Stock AZ"]
+        "Robotics & Automation": ["ISRG", "TXN", "ABB", "TER", "SYM", "PATH"],
+        "Aerospace Technology": ["BA", "LMT", "RTX", "GD", "TDY", "HII"]
     },
     "Materials": {
-        "Advanced Materials": ["Stock BA", "Stock BB", "Stock BC", "Stock BD"],
-        "Nanotechnology": ["Stock BE", "Stock BF", "Stock BG", "Stock BH"],
-        "Sustainable & Recycled Materials": ["Stock BI", "Stock BJ", "Stock BK", "Stock BL"]
+        "Advanced Materials": ["EMN", "HTGC", "KMT", "RYAM", "HUN", "ASIX"],
+        "Nanotechnology": ["ZTEK", "NNOMF", "NNXPF", "ATOM", "AVAV", "ONTO"],
+        "Sustainable & Recycled Materials": ["EMN", "ECL", "SMG", "PKG", "WRK", "SEE"]
     },
     "Utilities": {
-        "Smart Grid Technology": ["Stock BM", "Stock BN", "Stock BO", "Stock BP"],
-        "Renewable Electricity Integration": ["Stock BQ", "Stock BR", "Stock BS", "Stock BT"]
+        "Smart Grid Technology": ["ITRI", "GRID", "IPWR", "BMI", "HASI", "ARQ"],
+        "Renewable Electricity Integration": ["PEG", "NEE", "ED", "SO", "DUK", "ES"]
     },
     "Consumer Staples": {
-        "Sustainable & Organic Food": ["Stock BU", "Stock BV", "Stock BW", "Stock BX"],
-        "Household & Personal Care": ["Stock BY", "Stock BZ", "Stock CA", "Stock CB"]
+        "Sustainable & Organic Food": ["NSRGY", "TSN", "CLX", "MO", "OLLI", "COCO"],
+        "Household & Personal Care": ["PG", "CLX", "KMB", "UL", "CL", "EL"]
     },
     "Communication Services": {
-        "Social Media & Interactive Media": ["Stock CC", "Stock CD", "Stock CE", "Stock CF"],
-        "Telecom Services": ["Stock CG", "Stock CH", "Stock CI", "Stock CJ"]
+        "Social Media & Interactive Media": ["META", "SNAP", "PINS", "SPOT", "BILI", "TWTR"],
+        "Telecom Services": ["VZ", "T", "TMUS", "CMCSA", "DISH", "NOVN"]
     },
     "Real Estate": {
-        "Proptech & Real Estate Tech": ["Stock CK", "Stock CL", "Stock CM", "Stock CN"],
-        "REITs (Retail & Industrial)": ["Stock CO", "Stock CP", "Stock CQ", "Stock CR"]
+        "Proptech & Real Estate Tech": ["Z", "OPEN", "RDFN", "AURUMPROP", "COMP", "DOC"],
+        "REITs (Retail & Industrial)": ["PLD", "AMT", "SPG", "PSA", "EQR", "DLR"]
     },
     "Basic Materials": {
-        "Chemicals & Specialty Chemicals": ["Stock CS", "Stock CT", "Stock CU", "Stock CV"],
-        "Metals & Mining": ["Stock CW", "Stock CX", "Stock CY", "Stock CZ"]
+        "Chemicals & Specialty Chemicals": ["DOW", "LYB", "SHW", "HUN", "ECL", "PPG"],
+        "Metals & Mining": ["BHP", "RIO", "FCX", "NEM", "GOLD", "VALE"]
     },
     "Oil & Gas": {
-        "Major Integrated Oil Companies": ["Stock DA", "Stock DB", "Stock DC", "Stock DD"],
-        "Oilfield Services & Equipment": ["Stock DE", "Stock DF", "Stock DG", "Stock DH"],
-        "Canadian Oil & Gas": ["Stock DI", "Stock DJ", "Stock DK", "Stock DL"]
+        "Major Integrated Oil Companies": ["XOM", "CVX", "COP", "SLB", "WMB", "EOG"],
+        "Oilfield Services & Equipment": ["SLB", "HAL", "BKR", "NOV", "FTI", "COS"],
+        "Canadian Oil & Gas": ["MEG", "FO", "ATH", "HWX", "CNQ", "SU"]
     },
     "Gold & Precious Metals": {
-        "Gold Mining": ["Stock DM", "Stock DN", "Stock DO", "Stock DP"],
-        "Precious Metals Streaming & Royalty": ["Stock DQ", "Stock DR", "Stock DS", "Stock DT"]
+        "Gold Mining": ["NEM", "GOLD", "KL", "AEM", "FNV", "ABX"],
+        "Precious Metals Streaming & Royalty": ["FNV", "WPM", "RGLD", "HL", "PAAS", "AUY"]
     },
-    "Arms/Defense": ["Stock DU", "Stock DV", "Stock DW", "Stock DX"],
-    "Cryptocurrency": ["Stock DY", "Stock DZ", "Stock EA", "Stock EB"]
+    "Arms/Defense": ["LMT", "RTX", "BA", "HON", "GD", "NOC"],
+    "Cryptocurrency": ["COIN", "MSTR", "RIOT", "MARA", "BLOK", "CORE", "CLSK", "HUT", "HOOD", "TERA"]
 }
 
 # -----------------------------
@@ -107,16 +102,11 @@ subsector_list = list(SECTORS[sector].keys()) if isinstance(SECTORS[sector], dic
 subsector = st.sidebar.selectbox("Select Niche/Subsector", subsector_list)
 tickers = SECTORS[sector][subsector] if isinstance(SECTORS[sector], dict) else SECTORS[sector]
 leader = st.sidebar.selectbox("Select Leader", tickers)
+start_date = st.sidebar.date_input("Start Date", value=datetime(2023, 1, 1))
+end_date = st.sidebar.date_input("End Date", value=datetime(2024, 7, 1))
 
-# Default dates: end_date = today, start_date = 1 year before
-today = datetime.today()
-default_start = today - timedelta(days=365)
-start_date = st.sidebar.date_input("Start Date", value=default_start)
-end_date = st.sidebar.date_input("End Date", value=today)
-
-# Fixed metrics defaults
-roc_window = 14
-neg_space_threshold = 0.05
+roc_window = st.sidebar.slider("ROC Window (days)", min_value=5, max_value=30, value=14)
+neg_space_threshold = st.sidebar.slider("Negative Space Threshold", min_value=0.01, max_value=0.1, value=0.05, step=0.01)
 
 # -----------------------------
 # 3. Data Fetching
@@ -125,6 +115,7 @@ neg_space_threshold = 0.05
 def fetch_stock_data(symbols, start_date, end_date):
     ticker = Ticker(symbols)
     data = ticker.history(start=start_date, end=end_date, interval='1d')
+    
     if isinstance(data.index, pd.MultiIndex):
         data = data.reset_index().pivot(index="date", columns="symbol", values="adjclose")
     return data.fillna(method='ffill').dropna()
@@ -151,19 +142,19 @@ def identify_phases(negative_space, roc_neg_space, acc_neg_space):
     phases = []
     for i in range(len(negative_space)):
         if pd.isna(roc_neg_space.iloc[i]) or pd.isna(acc_neg_space.iloc[i]):
-            phases.append("Neutral")
+            phases.append("Inactive")
         elif roc_neg_space.iloc[i] > 0 and negative_space.iloc[i] > 0:
-            phases.append("Early Stage")
+            phases.append("Initiation")
         elif roc_neg_space.iloc[i] < 0 and acc_neg_space.iloc[i] < 0:
-            phases.append("Building Stage")
+            phases.append("Early Inflection")
         elif roc_neg_space.iloc[i] < 0 and acc_neg_space.iloc[i] >= 0:
-            phases.append("Expansion")
+            phases.append("Mid Inflection")
         elif roc_neg_space.iloc[i] >= 0 and negative_space.iloc[i] < 0:
-            phases.append("Maturity")
+            phases.append("Late Inflection")
         elif roc_neg_space.iloc[i] > 0 and negative_space.iloc[i] > 0:
-            phases.append("Pullback")
+            phases.append("Interruption")
         else:
-            phases.append("Neutral")
+            phases.append("Inactive")
     return phases
 
 leader_prices = data[leader]
@@ -176,28 +167,29 @@ phases = identify_phases(negative_space, roc_neg_space, acc_neg_space)
 # -----------------------------
 # 5. Main Display
 # -----------------------------
-st.subheader("Normalized Growth & Metrics")
+st.subheader("Normalized Prices & Metrics")
 st.line_chart(pd.concat([leader_norm, avg_follower_norm], axis=1))
 
 st.subheader("Negative Space & ROC")
 fig_neg = go.Figure()
 fig_neg.add_trace(go.Scatter(x=data.index, y=negative_space, name='Negative Space', line=dict(color='red')))
-fig_neg.add_trace(go.Scatter(x=data.index, y=roc_neg_space, name='ROC', line=dict(color='purple')))
+fig_neg.add_trace(go.Scatter(x=data.index, y=roc_neg_space, name='ROC Negative Space', line=dict(color='purple')))
 st.plotly_chart(fig_neg, use_container_width=True)
 
 st.subheader("Current Phase")
 st.markdown(f"**{phases[-1]}**")
 
 # -----------------------------
-# 6. Dot Plot: Progression Toward Leader
+# 6. Dot Plot: Progression Toward Inflection
 # -----------------------------
-st.subheader("Stock Progression Toward Sector Inflection")
-progress = pd.DataFrame({f"Stock {chr(65+i)}": normalize_prices(data[c])/normalize_prices(data[leader]).max()
-                         for i, c in enumerate(tickers)})
+st.subheader("Stock Progression Toward Leader Inflection")
+
+# Compute % progress: normalize follower vs leader max
+progress = pd.DataFrame({c: normalize_prices(data[c]) / normalize_prices(data[leader]).max() for c in tickers})
 latest_progress = progress.iloc[-1]
 
 fig_dot = go.Figure()
-for stock in progress.columns:
+for stock in tickers:
     fig_dot.add_trace(go.Scatter(
         x=[stock],
         y=[latest_progress[stock]],
@@ -210,7 +202,7 @@ for stock in progress.columns:
     ))
 
 fig_dot.update_layout(
-    yaxis_title="Progress to Sector Inflection",
+    yaxis_title="Progress to Leader Inflection",
     xaxis_title="Stocks",
     yaxis=dict(range=[0, 1]),
     height=500
@@ -225,7 +217,7 @@ metrics_df = pd.DataFrame({
     "Leader": leader_norm,
     "Followers_Avg": avg_follower_norm,
     "Negative_Space": negative_space,
-    "ROC": roc_neg_space,
+    "ROC_Negative_Space": roc_neg_space,
     "ACC_Negative_Space": acc_neg_space,
     "Phase": phases
 })
