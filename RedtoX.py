@@ -2,24 +2,21 @@ import streamlit as st
 import feedparser
 import requests
 import pandas as pd
-import re
+import json
 import time
+import re
 from datetime import datetime
 from typing import List, Dict, Optional
+import os
 
 # ------------------------------
-# Configuration
+# Page configuration
 # ------------------------------
 st.set_page_config(
-    page_title="Investment Forum Dashboard",
+    page_title="Social Media Dashboard",
     page_icon="📊",
     layout="wide"
 )
-
-# ------------------------------
-# Hardcoded API keys
-# ------------------------------
-import os
 
 # ------------------------------
 # Hardcoded API keys
@@ -34,6 +31,7 @@ X_BEARER_TOKEN = "AAAAAAAAAAAAAAAAAAAAAMqZ3gEAAAAAD2weeHOPZHMtouZgQvWGa2G8mh0%3D
 HF_TOKEN = os.getenv("HF_TOKEN")
 if not HF_TOKEN:
     st.warning("HF_TOKEN not found in environment. Classification will not work.")
+
 # ------------------------------
 # Channels & Keywords
 # ------------------------------
@@ -66,33 +64,30 @@ class SupabaseClient:
             'Content-Type': 'application/json'
         }
 
-    def insert_data(self, table: str, data: Dict) -> str:
-        # Prevent duplicates based on title
+    def insert_data(self, table: str, data: Dict) -> bool:
+        """
+        Insert data into Supabase with duplicate prevention (checks title+channel).
+        """
         try:
-            check_resp = requests.get(
-                f"{self.url}/rest/v1/{table}?title=eq.{data['title']}",
-                headers=self.headers
-            )
+            # Check for duplicates
+            query = f"select=id&channel=eq.{data['channel']}&title=eq.{data['title'][:500]}"
+            check_resp = requests.get(f"{self.url}/rest/v1/{table}?{query}", headers=self.headers)
             if check_resp.status_code == 200 and len(check_resp.json()) > 0:
-                return "duplicate"
+                return False  # Duplicate, skip insert
 
-            response = requests.post(
-                f"{self.url}/rest/v1/{table}",
-                headers=self.headers,
-                json=data
-            )
+            response = requests.post(f"{self.url}/rest/v1/{table}", headers=self.headers, json=data)
             if response.status_code in [200, 201]:
-                return "inserted"
-            return f"error_{response.status_code}"
+                return True
+            else:
+                st.warning(f"Insert failed: Status {response.status_code} | Response: {response.text} | Data preview: {str(data)[:200]}")
+                return False
         except Exception as e:
-            return f"exception_{str(e)}"
+            st.error(f"Supabase insert error: {str(e)}")
+            return False
 
     def select_data(self, table: str, limit: int = 50) -> List[Dict]:
         try:
-            response = requests.get(
-                f"{self.url}/rest/v1/{table}?order=created_at.desc&limit={limit}",
-                headers=self.headers
-            )
+            response = requests.get(f"{self.url}/rest/v1/{table}?order=created_at.desc&limit={limit}", headers=self.headers)
             if response.status_code == 200:
                 return response.json()
             return []
@@ -101,11 +96,10 @@ class SupabaseClient:
             return []
 
 # ------------------------------
-# Text processing functions
+# Text processing
 # ------------------------------
 def strip_html_tags(text: str) -> str:
-    clean = re.compile('<.*?>')
-    return re.sub(clean, '', text)
+    return re.sub('<.*?>', '', text)
 
 def clean_text(text: str) -> str:
     if not text:
@@ -119,9 +113,9 @@ def get_keywords_for_channel(channel: str) -> List[str]:
     clean_channel = channel.replace('r/', '').strip()
     return CHANNEL_KEYWORDS.get(clean_channel, ["investing", "stocks", "financial", "market", "portfolio"])
 
-def classify_text_hf(text: str, keywords: List[str], hf_token: str) -> Optional[Dict]:
+def classify_text_with_huggingface(text: str, keywords: List[str], hf_token: str) -> Optional[Dict]:
     if not hf_token:
-        st.warning("HuggingFace token not set.")
+        st.warning("HuggingFace token not set in environment.")
         return None
     try:
         api_url = "https://api-inference.huggingface.co/models/facebook/bart-large-mnli"
@@ -139,7 +133,7 @@ def classify_text_hf(text: str, keywords: List[str], hf_token: str) -> Optional[
         return None
 
 # ------------------------------
-# Reddit RSS fetching
+# Reddit RSS
 # ------------------------------
 def fetch_reddit_rss(channel: str, max_items: int = 20) -> List[Dict]:
     try:
@@ -165,129 +159,143 @@ def fetch_reddit_rss(channel: str, max_items: int = 20) -> List[Dict]:
         st.error(f"Error fetching RSS for r/{channel}: {str(e)}")
         return []
 
+
+# ------------------------------
+# X (Twitter) Posting with Logging
+# ------------------------------
+def post_to_x(text: str, bearer_token: str) -> Dict:
+    url = "https://api.twitter.com/2/tweets"
+    headers = {"Authorization": f"Bearer {bearer_token}", "Content-Type": "application/json"}
+    tweet_text = text[:280]  # Enforce 280 characters
+    try:
+        response = requests.post(url, headers=headers, json={"text": tweet_text})
+        if response.status_code == 201:
+            return {"status": "success", "code": 201, "message": response.json()}
+        else:
+            return {"status": "failed", "code": response.status_code, "message": response.text}
+    except Exception as e:
+        return {"status": "error", "code": None, "message": str(e)}
+
 # ------------------------------
 # Dashboard page
 # ------------------------------
 def dashboard_page():
-    st.header("Investment Forum RSS → NLP → Supabase Dashboard")
+    st.header("📊 Investment Forum RSS → NLP → Supabase Dashboard")
+    col1, col2 = st.columns([1, 1])
     
-    col1, col2 = st.columns([1,1])
     with col1:
-        channels_input = st.text_area("Reddit channels (comma-separated)", value="investingforbeginners, stocks, ValueInvesting", height=120)
+        st.subheader("Reddit Channels")
+        channels_input = st.text_area("Enter Reddit channels (comma-separated)", value="investingforbeginners, stocks, ValueInvesting", height=120)
         max_items = st.slider("Max items per channel", 5, 50, 20)
-        fetch_button = st.button("🔄 Fetch & Insert Posts")
+        fetch_button = st.button("🔄 Fetch & Filter Posts", type="primary")
     
     with col2:
+        st.subheader("Selected Channels & Keywords")
         channels = [c.strip() for c in channels_input.split(",") if c.strip()]
         for channel in channels[:5]:
-            st.write(f"**r/{channel}:** • {', '.join(get_keywords_for_channel(channel))}")
+            keywords = get_keywords_for_channel(channel)
+            st.write(f"**r/{channel}:** • {', '.join(keywords)}")
         if len(channels) > 5:
             st.write(f"... and {len(channels) - 5} more channels")
     
     if fetch_button:
-        if not HF_TOKEN:
-            st.error("HuggingFace token not set.")
+        if not all([SUPABASE_URL, SUPABASE_KEY, HF_TOKEN]):
+            st.error("Supabase URL/Key or HF_TOKEN not set.")
             return
         
         supabase = SupabaseClient(SUPABASE_URL, SUPABASE_KEY)
-        log_box = st.empty()
+        progress_bar = st.progress(0)
+        status_text = st.empty()
         total_processed = 0
-        total_inserted = 0
-        all_logs = []
-
-        for channel in channels:
-            items = fetch_reddit_rss(channel, max_items)
+        total_filtered = 0
+        results_summary = {}
+        
+        for i, channel in enumerate(channels):
+            status_text.text(f"Processing r/{channel}...")
             keywords = get_keywords_for_channel(channel)
+            items = fetch_reddit_rss(channel, max_items)
+            channel_filtered = 0
             for item in items:
                 total_processed += 1
-                classification = classify_text_hf(item['full_text'], keywords, HF_TOKEN)
-                data = {
-                    'channel': item['channel'],
-                    'title': item['title'][:500],
-                    'content': item['full_text'][:1000],
-                    'classification': classification['label'] if classification else "N/A",
-                    'confidence': classification['score'] if classification else 1.0,
-                    'keywords_used': ', '.join(keywords),
-                    'link': item['link'],
-                    'created_at': datetime.now().isoformat()
-                }
-                status = supabase.insert_data('reddit_filtered_posts', data)
-                if status == "inserted":
-                    total_inserted += 1
-                    log_msg = f"✅ Inserted: {data['title'][:50]}..."
-                elif status == "duplicate":
-                    log_msg = f"⚠ Skipped (duplicate): {data['title'][:50]}..."
-                else:
-                    log_msg = f"❌ Insert error: {data['title'][:50]} | Status={status}"
-                all_logs.append(log_msg)
-                log_box.text("\n".join(all_logs[-10:]))
-                time.sleep(0.05)
-
-        st.success(f"✅ Complete! Processed {total_processed}, inserted {total_inserted}")
+                classification = classify_text_with_huggingface(item['full_text'], keywords, HF_TOKEN)
+                if classification:
+                    data = {
+                        'channel': item['channel'],
+                        'title': item['title'][:500],
+                        'content': item['full_text'][:1000],
+                        'classification': classification['label'],
+                        'confidence': classification['score'],
+                        'keywords_used': ', '.join(keywords),
+                        'link': item['link'],
+                        'created_at': datetime.now().isoformat()
+                    }
+                    if supabase.insert_data('reddit_filtered_posts', data):
+                        total_filtered += 1
+                        channel_filtered += 1
+                time.sleep(0.1)
+            results_summary[channel] = {'processed': len(items), 'filtered': channel_filtered, 'keywords': keywords}
+            progress_bar.progress((i + 1)/len(channels))
+        
+        status_text.text(f"✅ Complete! Processed {total_processed}, filtered {total_filtered}")
+        
+        st.subheader("📈 Processing Summary")
+        summary_data = []
+        for channel, stats in results_summary.items():
+            summary_data.append({
+                'Channel': f"r/{channel}",
+                'Posts Processed': stats['processed'],
+                'Posts Filtered': stats['filtered'],
+                'Filter Rate': f"{(stats['filtered']/stats['processed']*100):.1f}%" if stats['processed']>0 else "0%",
+                'Keywords Used': ', '.join(stats['keywords'])
+            })
+        if summary_data:
+            st.dataframe(pd.DataFrame(summary_data), use_container_width=True)
 
     # ------------------------------
-    # Display latest 50 posts with expanders
+    # Display latest 50 filtered posts
     # ------------------------------
     st.subheader("📊 Latest 50 Filtered Posts")
     supabase = SupabaseClient(SUPABASE_URL, SUPABASE_KEY)
     results = supabase.select_data('reddit_filtered_posts', 50)
-
     if results:
-        df = pd.DataFrame(results)
-        for col in ['title','content','classification','confidence']:
-            if col not in df.columns:
-                df[col] = ""
-        
-        df = df.sort_values(by='confidence', ascending=False).reset_index(drop=True)
-
-        for idx, row in df.iterrows():
-            with st.expander(f"{row['title'][:80]}"):
-                st.markdown(f"**Top Tag:** {row['classification']} (Confidence: {row['confidence']:.2f})")
-                st.markdown(f"**Content:**\n{row['content']}")
+        for item in results:
+            exp_label = f"{item['title']}"  # Title in expander
+            content_preview = f"Tag: {item['classification']} (Confidence: {item['confidence']:.2f})\n\nContent: {item['content']}"
+            with st.expander(exp_label):
+                st.write(content_preview)
     else:
-        st.info("No posts found.")
+        st.info("No posts available yet.")
 
 # ------------------------------
-# Bulk X Posting page with detailed logging
+# Bulk X posting page
 # ------------------------------
 def bulk_posting_page():
-    st.header("🐦 Bulk X Posting with Detailed Logs")
-    drafts_input = st.text_area("Enter one post per line", height=300)
+    st.header("🐦 Bulk X (Twitter) Posting")
+    drafts_input = st.text_area("Enter your post drafts (one per line)", height=300)
     delay_seconds = st.slider("Delay between posts (seconds)", 1, 60, 10)
-    
-    if st.button("🚀 Post All"):
+
+    if st.button("🚀 Post All to X", type="primary"):
+        if not X_BEARER_TOKEN:
+            st.error("X Bearer Token not set.")
+            return
+
         drafts = [d.strip() for d in drafts_input.split('\n') if d.strip()]
         if not drafts:
-            st.warning("No drafts to post.")
+            st.warning("No posts to send.")
             return
-        
+
         progress_bar = st.progress(0)
-        log_box = st.empty()
+        logs_container = st.empty()
         logs = []
 
         for i, draft in enumerate(drafts):
-            try:
-                url = "https://api.twitter.com/2/tweets"
-                headers = {"Authorization": f"Bearer {X_BEARER_TOKEN}", "Content-Type": "application/json"}
-                payload = {"text": draft[:280]}
-                resp = requests.post(url, headers=headers, json=payload)
-                
-                if resp.status_code == 201:
-                    log_msg = f"✅ Posted successfully: {draft[:50]}..."
-                else:
-                    log_msg = f"❌ Failed | Status: {resp.status_code} | Response: {resp.text[:200]} | Draft: {draft[:50]}..."
-                
-                logs.append(log_msg)
-                log_box.text("\n".join(logs[-10:]))
-            except Exception as e:
-                log_msg = f"⚠ Exception: {str(e)} | Draft: {draft[:50]}..."
-                logs.append(log_msg)
-                log_box.text("\n".join(logs[-10:]))
-            
-            progress_bar.progress((i+1)/len(drafts))
+            result = post_to_x(draft, X_BEARER_TOKEN)
+            logs.append(f"[{i+1}/{len(drafts)}] Status: {result['status']} | Code: {result['code']} | Message: {result['message']}")
+            logs_container.text("\n".join(logs))
+            progress_bar.progress((i + 1) / len(drafts))
             time.sleep(delay_seconds)
         
-        st.success(f"✅ Posting complete. Total drafts: {len(drafts)}")
+        st.success("🚀 All posts attempted. Check logs above for details.")
 
 # ------------------------------
 # Main app
