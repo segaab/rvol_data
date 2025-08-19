@@ -31,10 +31,11 @@ if not HF_TOKEN:
 # --------------------
 # OAuth1.0a credentials for X API
 # --------------------
-API_KEY = "J6POYKxImGNUa70fshwwJepWx"
-API_SECRET = "V8enIpoIMZS0WjmkIZrI91SsnF7iiLViYwus33Kg0KzC94GCU5"
-ACCESS_TOKEN = "1760306826262794242-oAhH2ZF1BPqhFSGK1QGYaTXjg0QUzz"
-ACCESS_TOKEN_SECRET = "J6POYKxImGNUa70fshwwJepWx"
+
+API_KEY = "QXjPpeI0S84PbjTfrUYdtvXVV"
+API_SECRET = "HMEmAYaDDj6WoakCxJHjRweuLNiSrnN3smaHFepCfvgKJecHkO"
+ACCESS_TOKEN = "1760306826262794242-2y8aVYTg8moCeInR8vFLTrDpFxz6p1"
+ACCESS_TOKEN_SECRET = "9KiYL8hU6Rce5VfdcAQdNo9UGuFS4K9qK9gp5BMjBKlIM"
 
 from requests_oauthlib import OAuth1
 
