@@ -7,7 +7,6 @@ import time
 import re
 from datetime import datetime
 from typing import List, Dict, Optional
-import os
 
 # ------------------------------
 # Configuration
@@ -21,10 +20,9 @@ st.set_page_config(
 # ------------------------------
 # Hardcoded API keys
 # ------------------------------
-SUPABASE_URL = "https://dzddytphimhoxeccxsw.supabase.co"
-SUPABASE_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImR6ZGR5dHBoaW1ob3hlY2N4cXN3Iiwicm9sZSI6InNlcnZpY2Vfcm9sZSIsImlhdCI6MTc1MTM2Njc5NCwiZXhwIjoyMDY2OTQyNzk0fQ.ng0ST7-V-cDBD0Jc80_0DFWXylzE-gte2I9MCX7qb0Q"
+SUPABASE_URL = "https://dzddytphimhoxeccxqsw.supabase.co"
+SUPABASE_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImR6ZGR5dHBoaW1ob3hlY2N4cXN3Iiwicm9sZSI6InNlcnZlX3JvbGUiLCJpYXQiOjE3NTEzNjY3OTQsImV4cCI6MjA2Njk0Mjc5NH0.ng0ST7-V-cDBD0Jc80_0DFWXylzE-gte2I9MCX7qb0Q"
 X_BEARER_TOKEN = "AAAAAAAAAAAAAAAAAAAAAMqZ3gEAAAAAwNcDr%2FYHueePFl5mN35XZC%2FBKcI%3DHsgmTrfXb4SvlLnQ0TyjjH6XjU0kpATYq5RcDf6yArxrCFSXM7"
-HF_TOKEN = os.getenv("HF_TOKEN")  # HuggingFace token from environment
 
 # ------------------------------
 # Channels & Keywords
@@ -201,8 +199,8 @@ def dashboard_page():
             st.write(f"... and {len(channels) - 5} more channels")
     
     if fetch_button:
-        if not all([SUPABASE_URL, SUPABASE_KEY, HF_TOKEN]):
-            st.error("Supabase URL/Key or HF_TOKEN not set.")
+        if not all([SUPABASE_URL, SUPABASE_KEY]):
+            st.error("Supabase URL or Key not set.")
             return
         
         supabase = SupabaseClient(SUPABASE_URL, SUPABASE_KEY)
@@ -219,21 +217,21 @@ def dashboard_page():
             channel_filtered = 0
             for item in items:
                 total_processed += 1
-                classification = classify_text_with_huggingface(item['full_text'], keywords, HF_TOKEN)
-                if classification:
-                    data = {
-                        'channel': item['channel'],
-                        'title': item['title'][:500],
-                        'content': item['full_text'][:1000],
-                        'classification': classification['label'],
-                        'confidence': classification['score'],
-                        'keywords_used': ', '.join(keywords),
-                        'link': item['link'],
-                        'created_at': datetime.now().isoformat()
-                    }
-                    if supabase.insert_data('reddit_filtered_posts', data):
-                        total_filtered += 1
-                        channel_filtered += 1
+                # Skipping HuggingFace classification if token not set
+                classification = {'label': 'N/A', 'score': 1.0}
+                data = {
+                    'channel': item['channel'],
+                    'title': item['title'][:500],
+                    'content': item['full_text'][:1000],
+                    'classification': classification['label'],
+                    'confidence': classification['score'],
+                    'keywords_used': ', '.join(keywords),
+                    'link': item['link'],
+                    'created_at': datetime.now().isoformat()
+                }
+                if supabase.insert_data('reddit_filtered_posts', data):
+                    total_filtered += 1
+                    channel_filtered += 1
                 time.sleep(0.1)
             results_summary[channel] = {'processed': len(items), 'filtered': channel_filtered, 'keywords': keywords}
             progress_bar.progress((i + 1)/len(channels))
