@@ -10,3 +10,4 @@ supabase
 postgrest
 requests
 numpy
+feedparser
