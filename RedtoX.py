@@ -5,7 +5,9 @@ import pandas as pd
 import time
 import re
 from datetime import datetime
-from typing import List, Dict
+from typing import List, Dict, Optional
+import urllib.parse
+import os
 
 # ------------------------------
 # Configuration
@@ -22,6 +24,7 @@ st.set_page_config(
 SUPABASE_URL = "https://dzddytphimhoxeccxqsw.supabase.co"
 SUPABASE_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImR6ZGR5dHBoaW1ob3hlY2N4cXN3Iiwicm9sZSI6InNlcnZlX3JvbGUiLCJpYXQiOjE3NTEzNjY3OTQsImV4cCI6MjA2Njk0Mjc5NH0.ng0ST7-V-cDBD0Jc80_0DFWXylzE-gte2I9MCX7qb0Q"
 X_BEARER_TOKEN = "AAAAAAAAAAAAAAAAAAAAAMqZ3gEAAAAAwNcDr%2FYHueePFl5mN35XZC%2FBKcI%3DHsgmTrfXb4SvlLnQ0TyjjH6XjU0kpATYq5RcDf6yArxrCFSXM7"
+HF_TOKEN = os.getenv("HF_TOKEN")  # HuggingFace token from environment
 
 # ------------------------------
 # Channels & Keywords
@@ -53,30 +56,20 @@ class SupabaseClient:
             'Content-Type': 'application/json'
         }
 
-    def insert_data(self, table: str, data: Dict) -> bool:
+    def insert_data(self, table: str, data: Dict) -> str:
         try:
-            # Check for duplicates using channel + link
-            where_clause = f"channel=eq.{data['channel']}&link=eq.{data['link']}"
+            where_clause = f"link=eq.{urllib.parse.quote(data['link'])}"
             check = requests.get(f"{self.url}/rest/v1/{table}?select=*&{where_clause}", headers=self.headers)
             if check.status_code == 200 and check.json():
-                return False  # Duplicate found, skip
-
-            response = requests.post(
-                f"{self.url}/rest/v1/{table}",
-                headers=self.headers,
-                json=data
-            )
-            return response.status_code in [200, 201]
+                return "duplicate"
+            response = requests.post(f"{self.url}/rest/v1/{table}", headers=self.headers, json=data)
+            return "inserted" if response.status_code in [200, 201] else "error"
         except Exception as e:
-            st.error(f"Supabase insert error: {str(e)}")
-            return False
+            return f"error: {str(e)}"
 
     def select_data(self, table: str, limit: int = 50) -> List[Dict]:
         try:
-            response = requests.get(
-                f"{self.url}/rest/v1/{table}?select=*&order=created_at.desc&limit={limit}",
-                headers=self.headers
-            )
+            response = requests.get(f"{self.url}/rest/v1/{table}?select=*&order=created_at.desc&limit={limit}", headers=self.headers)
             if response.status_code == 200:
                 return response.json()
             return []
@@ -85,7 +78,7 @@ class SupabaseClient:
             return []
 
 # ------------------------------
-# Text processing functions
+# Text processing & classification
 # ------------------------------
 def strip_html_tags(text: str) -> str:
     return re.sub('<.*?>', '', text)
@@ -101,6 +94,24 @@ def clean_text(text: str) -> str:
 def get_keywords_for_channel(channel: str) -> List[str]:
     clean_channel = channel.replace('r/', '').strip()
     return CHANNEL_KEYWORDS.get(clean_channel, ["investing", "stocks", "financial", "market", "portfolio"])
+
+def classify_text_hf(text: str, keywords: List[str], hf_token: str) -> Optional[Dict]:
+    if not hf_token:
+        return None
+    try:
+        url = "https://api-inference.huggingface.co/models/facebook/bart-large-mnli"
+        headers = {"Authorization": f"Bearer {hf_token}"}
+        payload = {"inputs": text[:512], "parameters": {"candidate_labels": keywords}}
+        response = requests.post(url, headers=headers, json=payload)
+        if response.status_code == 200:
+            result = response.json()
+            if 'labels' in result and 'scores' in result and result['scores'][0] > 0.25:
+                return {"label": result['labels'][0], "score": result['scores'][0]}
+        return None
+    except Exception as e:
+        st.warning(f"HuggingFace error: {str(e)}")
+        return None
+
 
 # ------------------------------
 # Reddit RSS
@@ -130,7 +141,7 @@ def fetch_reddit_rss(channel: str, max_items: int = 20) -> List[Dict]:
         return []
 
 # ------------------------------
-# X (Twitter) Posting
+# X Posting
 # ------------------------------
 def post_to_x(text: str, bearer_token: str) -> bool:
     try:
@@ -144,28 +155,16 @@ def post_to_x(text: str, bearer_token: str) -> bool:
         return False
 
 # ------------------------------
-# Main Streamlit app
-# ------------------------------
-def main():
-    st.title("📊 Investment Forum Dashboard")
-    page = st.selectbox("Navigate", ["Dashboard", "Bulk X Posting"])
-    if page == "Dashboard":
-        dashboard_page()
-    else:
-        bulk_posting_page()
-
-# ------------------------------
-# Dashboard page
+# Dashboard Page
 # ------------------------------
 def dashboard_page():
-    st.header("Investment Forum RSS → Supabase Dashboard")
+    st.header("Investment Forum RSS → NLP → Supabase Dashboard")
     
-    col1, col2 = st.columns([1, 1])
-    
+    col1, col2 = st.columns([1,1])
     with col1:
-        channels_input = st.text_area("Enter Reddit channels (comma-separated)", value="investingforbeginners, stocks, ValueInvesting", height=120)
+        channels_input = st.text_area("Reddit channels (comma-separated)", value="investingforbeginners, stocks, ValueInvesting", height=120)
         max_items = st.slider("Max items per channel", 5, 50, 20)
-        fetch_button = st.button("🔄 Fetch & Filter Posts", type="primary")
+        fetch_button = st.button("🔄 Fetch & Insert Posts")
     
     with col2:
         channels = [c.strip() for c in channels_input.split(",") if c.strip()]
@@ -175,55 +174,70 @@ def dashboard_page():
             st.write(f"... and {len(channels) - 5} more channels")
     
     if fetch_button:
+        if not HF_TOKEN:
+            st.error("HuggingFace token not set.")
+            return
+        
         supabase = SupabaseClient(SUPABASE_URL, SUPABASE_KEY)
-        progress_bar = st.progress(0)
-        status_text = st.empty()
+        log_box = st.empty()
         total_processed = 0
         total_inserted = 0
-        
+        all_logs = []
+
         for i, channel in enumerate(channels):
-            status_text.text(f"Processing r/{channel}...")
             items = fetch_reddit_rss(channel, max_items)
-            inserted_count = 0
+            keywords = get_keywords_for_channel(channel)
             for item in items:
                 total_processed += 1
+                classification = classify_text_hf(item['full_text'], keywords, HF_TOKEN)
                 data = {
                     'channel': item['channel'],
                     'title': item['title'][:500],
                     'content': item['full_text'][:1000],
-                    'classification': 'N/A',
-                    'confidence': 1.0,
-                    'keywords_used': ', '.join(get_keywords_for_channel(channel)),
+                    'classification': classification['label'] if classification else "N/A",
+                    'confidence': classification['score'] if classification else 1.0,
+                    'keywords_used': ', '.join(keywords),
                     'link': item['link'],
                     'created_at': datetime.now().isoformat()
                 }
-                if supabase.insert_data('reddit_filtered_posts', data):
+                status = supabase.insert_data('reddit_filtered_posts', data)
+                if status == "inserted":
                     total_inserted += 1
-                    inserted_count += 1
+                    log_msg = f"✅ Inserted: {item['title'][:50]}..."
+                elif status == "duplicate":
+                    log_msg = f"⚠ Skipped (duplicate): {item['title'][:50]}..."
+                else:
+                    log_msg = f"❌ Error inserting: {item['title'][:50]}..."
+                all_logs.append(log_msg)
+                log_box.text("\n".join(all_logs[-10:]))  # show last 10 logs
                 time.sleep(0.05)
-            progress_bar.progress((i+1)/len(channels))
-        
-        status_text.text(f"✅ Complete! Processed {total_processed}, inserted {total_inserted}")
+
+        st.success(f"✅ Complete! Processed {total_processed}, inserted {total_inserted}")
 
     st.subheader("📊 Latest 50 Filtered Posts")
     supabase = SupabaseClient(SUPABASE_URL, SUPABASE_KEY)
     results = supabase.select_data('reddit_filtered_posts', 50)
     if results:
         df = pd.DataFrame(results)
-        display_columns = [col for col in ['channel','title','classification','confidence','created_at','keywords_used'] if col in df.columns]
-        st.dataframe(df[display_columns].copy(), use_container_width=True)
+        display_columns = ['channel','title','classification','confidence','keywords_used','created_at']
+        display_df = df[display_columns].copy()
+        display_df['confidence'] = display_df['confidence'].round(3)
+        st.dataframe(display_df, use_container_width=True)
     else:
         st.info("No posts available yet.")
 
 # ------------------------------
-# Bulk X posting page
+# Bulk X Posting Page
 # ------------------------------
 def bulk_posting_page():
     st.header("🐦 Bulk X (Twitter) Posting")
     drafts_input = st.text_area("Enter your post drafts (one per line)", height=300)
     delay_seconds = st.slider("Delay between posts (seconds)", 1, 60, 10)
     
-    if st.button("🚀 Post All to X", type="primary"):
+    if st.button("🚀 Post All to X"):
+        if not X_BEARER_TOKEN:
+            st.error("X Bearer Token not set.")
+            return
         drafts = [d.strip() for d in drafts_input.split('\n') if d.strip()]
         progress_bar = st.progress(0)
         for i, draft in enumerate(drafts):
@@ -232,7 +246,15 @@ def bulk_posting_page():
             time.sleep(delay_seconds)
 
 # ------------------------------
-# Run the app
+# Main App
 # ------------------------------
+def main():
+    st.title("📊 Investment Forum Dashboard")
+    page = st.selectbox("Navigate", ["Dashboard", "Bulk X Posting"])
+    if page == "Dashboard":
+        dashboard_page()
+    else:
+        bulk_posting_page()
+
 if __name__ == "__main__":
     main()
