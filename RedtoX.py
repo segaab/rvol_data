@@ -44,7 +44,7 @@ CHANNEL_KEYWORDS = {
 }
 
 # ------------------------------
-# Supabase client with detailed logging
+# Supabase client with logging & duplicate prevention
 # ------------------------------
 class SupabaseClient:
     def __init__(self, url: str, key: str):
@@ -58,7 +58,6 @@ class SupabaseClient:
 
     def insert_data(self, table: str, data: Dict) -> str:
         try:
-            # Check for duplicate using encoded link
             where_clause = f"link=eq.{urllib.parse.quote(data['link'])}"
             check = requests.get(f"{self.url}/rest/v1/{table}?select=*&{where_clause}", headers=self.headers)
             if check.status_code == 200 and check.json():
@@ -120,7 +119,7 @@ def classify_text_hf(text: str, keywords: List[str], hf_token: str) -> Optional[
     return None
 
 # ------------------------------
-# Reddit RSS
+# Reddit RSS fetching
 # ------------------------------
 def fetch_reddit_rss(channel: str, max_items: int = 20) -> List[Dict]:
     try:
@@ -161,7 +160,7 @@ def post_to_x(text: str, bearer_token: str) -> bool:
         return False
 
 # ------------------------------
-# Dashboard Page
+# Dashboard page
 # ------------------------------
 def dashboard_page():
     st.header("Investment Forum RSS → NLP → Supabase Dashboard")
@@ -190,8 +189,7 @@ def dashboard_page():
         total_inserted = 0
         all_logs = []
 
-        channels = [c.strip() for c in channels_input.split(",") if c.strip()]
-        for i, channel in enumerate(channels):
+        for channel in channels:
             items = fetch_reddit_rss(channel, max_items)
             keywords = get_keywords_for_channel(channel)
             for item in items:
@@ -221,19 +219,24 @@ def dashboard_page():
 
         st.success(f"✅ Complete! Processed {total_processed}, inserted {total_inserted}")
 
+    # ------------------------------
     # Display latest posts
+    # ------------------------------
     st.subheader("📊 Latest 50 Filtered Posts")
     supabase = SupabaseClient(SUPABASE_URL, SUPABASE_KEY)
     results = supabase.select_data('reddit_filtered_posts', 50)
     if results:
         df = pd.DataFrame(results)
-        display_cols = ['channel','title','classification','confidence','keywords_used','created_at']
+        # DEBUG: check which columns are returned
+        st.write("Columns returned by Supabase:", df.columns.tolist())
+
+        display_cols = [col for col in ['channel','title','classification','confidence','keywords_used','created_at'] if col in df.columns]
         st.dataframe(df[display_cols], use_container_width=True)
     else:
         st.info("No posts found.")
 
 # ------------------------------
-# Bulk X Posting Page
+# Bulk X Posting page
 # ------------------------------
 def bulk_posting_page():
     st.header("🐦 Bulk X Posting")
@@ -249,7 +252,7 @@ def bulk_posting_page():
             time.sleep(delay_seconds)
 
 # ------------------------------
-# Main
+# Main app
 # ------------------------------
 def main():
     st.title("📊 Investment Forum Dashboard")
