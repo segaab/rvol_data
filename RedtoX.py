@@ -19,11 +19,21 @@ st.set_page_config(
 # ------------------------------
 # Hardcoded API keys
 # ------------------------------
+import os
+
+# ------------------------------
+# Hardcoded API keys
+# ------------------------------
 SUPABASE_URL = "https://dzddytphimhoxeccxqsw.supabase.co"
 SUPABASE_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImR6ZGR5dHBoaW1ob3hlY2N4cXN3Iiwicm9sZSI6InNlcnZpY2Vfcm9sZSIsImlhdCI6MTc1MTM2Njc5NCwiZXhwIjoyMDY2OTQyNzk0fQ.ng0ST7-V-cDBD0Jc80_0DFWXylzE-gte2I9MCX7qb0Q"
 X_BEARER_TOKEN = "AAAAAAAAAAAAAAAAAAAAAMqZ3gEAAAAAD2weeHOPZHMtouZgQvWGa2G8mh0%3DoPaDfJGkehIEfGFQ76n4EbMhuCcDM7dHBShS2SE7OoK4Lny8Pr"
-HF_TOKEN = "your_hf_token_here"  # replace with your HuggingFace token
 
+# ------------------------------
+# HuggingFace token from environment
+# ------------------------------
+HF_TOKEN = os.getenv("HF_TOKEN")
+if not HF_TOKEN:
+    st.warning("HF_TOKEN not found in environment. Classification will not work.")
 # ------------------------------
 # Channels & Keywords
 # ------------------------------
