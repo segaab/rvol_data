@@ -2,7 +2,6 @@ import streamlit as st
 import feedparser
 import requests
 import pandas as pd
-import json
 import time
 import re
 from datetime import datetime
@@ -44,7 +43,7 @@ CHANNEL_KEYWORDS = {
 DEFAULT_CHANNELS = list(CHANNEL_KEYWORDS.keys())
 
 # ------------------------------
-# Supabase client
+# Supabase client with duplicate prevention
 # ------------------------------
 class SupabaseClient:
     def __init__(self, url: str, key: str):
@@ -58,6 +57,13 @@ class SupabaseClient:
 
     def insert_data(self, table: str, data: Dict) -> bool:
         try:
+            # Check for duplicates based on channel + title + link
+            where_clause = f"channel=eq.{data['channel']}&title=eq.{data['title']}&link=eq.{data['link']}"
+            check = requests.get(f"{self.url}/rest/v1/{table}?{where_clause}", headers=self.headers)
+            if check.status_code == 200 and check.json():
+                # Duplicate found, skip insert
+                return False
+
             response = requests.post(
                 f"{self.url}/rest/v1/{table}",
                 headers=self.headers,
@@ -99,28 +105,6 @@ def clean_text(text: str) -> str:
 def get_keywords_for_channel(channel: str) -> List[str]:
     clean_channel = channel.replace('r/', '').strip()
     return CHANNEL_KEYWORDS.get(clean_channel, ["investing", "stocks", "financial", "market", "portfolio"])
-
-def classify_text_with_huggingface(text: str, keywords: List[str], hf_token: str) -> Optional[Dict]:
-    if not hf_token:
-        st.warning("HuggingFace token not set in environment.")
-        return None
-    try:
-        api_url = "https://api-inference.huggingface.co/models/facebook/bart-large-mnli"
-        headers = {"Authorization": f"Bearer {hf_token}"}
-        payload = {
-            "inputs": text[:512],
-            "parameters": {"candidate_labels": keywords}
-        }
-        response = requests.post(api_url, headers=headers, json=payload)
-        if response.status_code == 200:
-            result = response.json()
-            if isinstance(result, dict) and 'labels' in result and 'scores' in result:
-                if result['scores'][0] > 0.25:
-                    return {'label': result['labels'][0], 'score': result['scores'][0]}
-        return None
-    except Exception as e:
-        st.warning(f"HuggingFace API error: {str(e)}")
-        return None
 
 # ------------------------------
 # Reddit RSS
@@ -179,7 +163,7 @@ def main():
 # Dashboard page
 # ------------------------------
 def dashboard_page():
-    st.header("Investment Forum RSS → NLP → Supabase Dashboard")
+    st.header("Investment Forum RSS → Supabase Dashboard")
     
     col1, col2 = st.columns([1, 1])
     
@@ -217,7 +201,6 @@ def dashboard_page():
             channel_filtered = 0
             for item in items:
                 total_processed += 1
-                # Skipping HuggingFace classification if token not set
                 classification = {'label': 'N/A', 'score': 1.0}
                 data = {
                     'channel': item['channel'],
