@@ -5,7 +5,7 @@ import pandas as pd
 import time
 import re
 from datetime import datetime
-from typing import List, Dict, Optional
+from typing import List, Dict
 
 # ------------------------------
 # Configuration
@@ -40,8 +40,6 @@ CHANNEL_KEYWORDS = {
     "pennystocks": ["high risk", "speculation", "microcap stocks", "volatility", "momentum trading"]
 }
 
-DEFAULT_CHANNELS = list(CHANNEL_KEYWORDS.keys())
-
 # ------------------------------
 # Supabase client with duplicate prevention
 # ------------------------------
@@ -57,12 +55,11 @@ class SupabaseClient:
 
     def insert_data(self, table: str, data: Dict) -> bool:
         try:
-            # Check for duplicates based on channel + title + link
-            where_clause = f"channel=eq.{data['channel']}&title=eq.{data['title']}&link=eq.{data['link']}"
-            check = requests.get(f"{self.url}/rest/v1/{table}?{where_clause}", headers=self.headers)
+            # Check for duplicates using channel + link
+            where_clause = f"channel=eq.{data['channel']}&link=eq.{data['link']}"
+            check = requests.get(f"{self.url}/rest/v1/{table}?select=*&{where_clause}", headers=self.headers)
             if check.status_code == 200 and check.json():
-                # Duplicate found, skip insert
-                return False
+                return False  # Duplicate found, skip
 
             response = requests.post(
                 f"{self.url}/rest/v1/{table}",
@@ -77,7 +74,7 @@ class SupabaseClient:
     def select_data(self, table: str, limit: int = 50) -> List[Dict]:
         try:
             response = requests.get(
-                f"{self.url}/rest/v1/{table}?order=created_at.desc&limit={limit}",
+                f"{self.url}/rest/v1/{table}?select=*&order=created_at.desc&limit={limit}",
                 headers=self.headers
             )
             if response.status_code == 200:
@@ -91,8 +88,7 @@ class SupabaseClient:
 # Text processing functions
 # ------------------------------
 def strip_html_tags(text: str) -> str:
-    clean = re.compile('<.*?>')
-    return re.sub(clean, '', text)
+    return re.sub('<.*?>', '', text)
 
 def clean_text(text: str) -> str:
     if not text:
@@ -152,7 +148,6 @@ def post_to_x(text: str, bearer_token: str) -> bool:
 # ------------------------------
 def main():
     st.title("📊 Investment Forum Dashboard")
-    
     page = st.selectbox("Navigate", ["Dashboard", "Bulk X Posting"])
     if page == "Dashboard":
         dashboard_page()
@@ -168,83 +163,57 @@ def dashboard_page():
     col1, col2 = st.columns([1, 1])
     
     with col1:
-        st.subheader("Reddit Channels")
         channels_input = st.text_area("Enter Reddit channels (comma-separated)", value="investingforbeginners, stocks, ValueInvesting", height=120)
         max_items = st.slider("Max items per channel", 5, 50, 20)
         fetch_button = st.button("🔄 Fetch & Filter Posts", type="primary")
     
     with col2:
-        st.subheader("Selected Channels & Keywords")
         channels = [c.strip() for c in channels_input.split(",") if c.strip()]
         for channel in channels[:5]:
-            keywords = get_keywords_for_channel(channel)
-            st.write(f"**r/{channel}:** • {', '.join(keywords)}")
+            st.write(f"**r/{channel}:** • {', '.join(get_keywords_for_channel(channel))}")
         if len(channels) > 5:
             st.write(f"... and {len(channels) - 5} more channels")
     
     if fetch_button:
-        if not all([SUPABASE_URL, SUPABASE_KEY]):
-            st.error("Supabase URL or Key not set.")
-            return
-        
         supabase = SupabaseClient(SUPABASE_URL, SUPABASE_KEY)
         progress_bar = st.progress(0)
         status_text = st.empty()
         total_processed = 0
-        total_filtered = 0
-        results_summary = {}
+        total_inserted = 0
         
         for i, channel in enumerate(channels):
             status_text.text(f"Processing r/{channel}...")
-            keywords = get_keywords_for_channel(channel)
             items = fetch_reddit_rss(channel, max_items)
-            channel_filtered = 0
+            inserted_count = 0
             for item in items:
                 total_processed += 1
-                classification = {'label': 'N/A', 'score': 1.0}
                 data = {
                     'channel': item['channel'],
                     'title': item['title'][:500],
                     'content': item['full_text'][:1000],
-                    'classification': classification['label'],
-                    'confidence': classification['score'],
-                    'keywords_used': ', '.join(keywords),
+                    'classification': 'N/A',
+                    'confidence': 1.0,
+                    'keywords_used': ', '.join(get_keywords_for_channel(channel)),
                     'link': item['link'],
                     'created_at': datetime.now().isoformat()
                 }
                 if supabase.insert_data('reddit_filtered_posts', data):
-                    total_filtered += 1
-                    channel_filtered += 1
-                time.sleep(0.1)
-            results_summary[channel] = {'processed': len(items), 'filtered': channel_filtered, 'keywords': keywords}
-            progress_bar.progress((i + 1)/len(channels))
+                    total_inserted += 1
+                    inserted_count += 1
+                time.sleep(0.05)
+            progress_bar.progress((i+1)/len(channels))
         
-        status_text.text(f"✅ Complete! Processed {total_processed}, filtered {total_filtered}")
-        
-        st.subheader("📈 Processing Summary")
-        summary_data = []
-        for channel, stats in results_summary.items():
-            summary_data.append({
-                'Channel': f"r/{channel}",
-                'Posts Processed': stats['processed'],
-                'Posts Filtered': stats['filtered'],
-                'Filter Rate': f"{(stats['filtered']/stats['processed']*100):.1f}%" if stats['processed']>0 else "0%",
-                'Keywords Used': ', '.join(stats['keywords'])
-            })
-        if summary_data:
-            st.dataframe(pd.DataFrame(summary_data), use_container_width=True)
-    
+        status_text.text(f"✅ Complete! Processed {total_processed}, inserted {total_inserted}")
+
     st.subheader("📊 Latest 50 Filtered Posts")
     supabase = SupabaseClient(SUPABASE_URL, SUPABASE_KEY)
     results = supabase.select_data('reddit_filtered_posts', 50)
     if results:
         df = pd.DataFrame(results)
-        display_columns = ['channel','title','classification','confidence','created_at']
-        if 'keywords_used' in df.columns:
-            display_columns.insert(-1,'keywords_used')
-        display_df = df[display_columns].copy()
-        display_df['confidence'] = display_df['confidence'].round(3)
-        st.dataframe(display_df, use_container_width=True)
+        display_columns = [col for col in ['channel','title','classification','confidence','created_at','keywords_used'] if col in df.columns]
+        st.dataframe(df[display_columns].copy(), use_container_width=True)
+    else:
+        st.info("No posts available yet.")
 
 # ------------------------------
 # Bulk X posting page
@@ -255,9 +224,6 @@ def bulk_posting_page():
     delay_seconds = st.slider("Delay between posts (seconds)", 1, 60, 10)
     
     if st.button("🚀 Post All to X", type="primary"):
-        if not X_BEARER_TOKEN:
-            st.error("X Bearer Token not set.")
-            return
         drafts = [d.strip() for d in drafts_input.split('\n') if d.strip()]
         progress_bar = st.progress(0)
         for i, draft in enumerate(drafts):
