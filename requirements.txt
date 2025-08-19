@@ -11,3 +11,5 @@ postgrest
 requests
 numpy
 feedparser
+requests_oauthlib
+OAuth1
