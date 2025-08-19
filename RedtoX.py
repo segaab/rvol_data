@@ -44,7 +44,7 @@ CHANNEL_KEYWORDS = {
 }
 
 # ------------------------------
-# Supabase client with duplicate prevention
+# Supabase client with detailed logging
 # ------------------------------
 class SupabaseClient:
     def __init__(self, url: str, key: str):
@@ -58,13 +58,24 @@ class SupabaseClient:
 
     def insert_data(self, table: str, data: Dict) -> str:
         try:
+            # Check for duplicate
             where_clause = f"link=eq.{urllib.parse.quote(data['link'])}"
             check = requests.get(f"{self.url}/rest/v1/{table}?select=*&{where_clause}", headers=self.headers)
             if check.status_code == 200 and check.json():
                 return "duplicate"
+
+            # Attempt insert
             response = requests.post(f"{self.url}/rest/v1/{table}", headers=self.headers, json=data)
-            return "inserted" if response.status_code in [200, 201] else "error"
+            if response.status_code in [200, 201]:
+                return "inserted"
+            else:
+                st.warning(f"❌ Insert failed: Status {response.status_code} | Response: {response.text} | Data preview: {str(data)[:200]}")
+                return "error"
+        except requests.exceptions.RequestException as e:
+            st.error(f"⚠ Requests exception: {str(e)} | Data preview: {str(data)[:200]}")
+            return f"error: {str(e)}"
         except Exception as e:
+            st.error(f"⚠ Unexpected exception: {str(e)} | Data preview: {str(data)[:200]}")
             return f"error: {str(e)}"
 
     def select_data(self, table: str, limit: int = 50) -> List[Dict]:
@@ -111,7 +122,6 @@ def classify_text_hf(text: str, keywords: List[str], hf_token: str) -> Optional[
     except Exception as e:
         st.warning(f"HuggingFace error: {str(e)}")
         return None
-
 
 # ------------------------------
 # Reddit RSS
@@ -207,7 +217,7 @@ def dashboard_page():
                 elif status == "duplicate":
                     log_msg = f"⚠ Skipped (duplicate): {item['title'][:50]}..."
                 else:
-                    log_msg = f"❌ Error inserting: {item['title'][:50]}..."
+                    log_msg = f"❌ Error inserting: {item['title'][:50]} | Status: {status} | Data preview: {str(data)[:200]}"
                 all_logs.append(log_msg)
                 log_box.text("\n".join(all_logs[-10:]))  # show last 10 logs
                 time.sleep(0.05)
