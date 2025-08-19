@@ -153,8 +153,8 @@ def post_to_x(text: str, bearer_token: str) -> bool:
         url = "https://api.twitter.com/2/tweets"
         headers = {"Authorization": f"Bearer {bearer_token}", "Content-Type": "application/json"}
         payload = {"text": text[:280]}
-        response = requests.post(url, headers=headers, json=payload)
-        return response.status_code == 201
+        resp = requests.post(url, headers=headers, json=payload)
+        return resp.status_code == 201
     except Exception as e:
         st.error(f"X posting error: {str(e)}")
         return False
@@ -220,18 +220,25 @@ def dashboard_page():
         st.success(f"✅ Complete! Processed {total_processed}, inserted {total_inserted}")
 
     # ------------------------------
-    # Display latest posts
+    # Display latest 50 posts with expanders
     # ------------------------------
     st.subheader("📊 Latest 50 Filtered Posts")
     supabase = SupabaseClient(SUPABASE_URL, SUPABASE_KEY)
     results = supabase.select_data('reddit_filtered_posts', 50)
+
     if results:
         df = pd.DataFrame(results)
-        # DEBUG: check which columns are returned
-        st.write("Columns returned by Supabase:", df.columns.tolist())
+        for col in ['title','content','classification','confidence']:
+            if col not in df.columns:
+                df[col] = ""
+        
+        # Sort by confidence
+        df = df.sort_values(by='confidence', ascending=False).reset_index(drop=True)
 
-        display_cols = [col for col in ['channel','title','classification','confidence','keywords_used','created_at'] if col in df.columns]
-        st.dataframe(df[display_cols], use_container_width=True)
+        for idx, row in df.iterrows():
+            with st.expander(f"{row['title'][:80]}"):
+                st.markdown(f"**Top Tag:** {row['classification']} (Confidence: {row['confidence']:.2f})")
+                st.markdown(f"**Content:**\n{row['content']}")
     else:
         st.info("No posts found.")
 
