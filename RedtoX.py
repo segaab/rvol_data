@@ -22,9 +22,9 @@ st.set_page_config(
 # Hardcoded API keys
 # ------------------------------
 SUPABASE_URL = "https://dzddytphimhoxeccxqsw.supabase.co"
-SUPABASE_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImR6ZGR5dHBoaW1ob3hlY2N4cXN3Iiwicm9sZSI6InNlcnZlX3JvbGUiLCJpYXQiOjE3NTEzNjY3OTQsImV4cCI6MjA2Njk0Mjc5NH0.ng0ST7-V-cDBD0Jc80_0DFWXylzE-gte2I9MCX7qb0Q"
+SUPABASE_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImR6ZGR5dHBoaW1ob3hlY2N4cXN3Iiwicm9sZSI6InNlcnZpY2Vfcm9sZSIsImlhdCI6MTc1MTM2Njc5NCwiZXhwIjoyMDY2OTQyNzk0fQ.ng0ST7-V-cDBD0Jc80_0DFWXylzE-gte2I9MCX7qb0Q"
 X_BEARER_TOKEN = "AAAAAAAAAAAAAAAAAAAAAMqZ3gEAAAAAwNcDr%2FYHueePFl5mN35XZC%2FBKcI%3DHsgmTrfXb4SvlLnQ0TyjjH6XjU0kpATYq5RcDf6yArxrCFSXM7"
-HF_TOKEN = os.getenv("HF_TOKEN")  # HuggingFace token from environment
+HF_TOKEN = os.getenv("HF_TOKEN")
 
 # ------------------------------
 # Channels & Keywords
@@ -58,25 +58,23 @@ class SupabaseClient:
 
     def insert_data(self, table: str, data: Dict) -> str:
         try:
-            # Check for duplicate
+            # Check for duplicate using encoded link
             where_clause = f"link=eq.{urllib.parse.quote(data['link'])}"
             check = requests.get(f"{self.url}/rest/v1/{table}?select=*&{where_clause}", headers=self.headers)
             if check.status_code == 200 and check.json():
                 return "duplicate"
 
-            # Attempt insert
             response = requests.post(f"{self.url}/rest/v1/{table}", headers=self.headers, json=data)
             if response.status_code in [200, 201]:
                 return "inserted"
-            else:
-                st.warning(f"❌ Insert failed: Status {response.status_code} | Response: {response.text} | Data preview: {str(data)[:200]}")
-                return "error"
+            st.warning(f"❌ Insert failed ({response.status_code}): {response.text} | Data: {str(data)[:200]}")
+            return "error"
         except requests.exceptions.RequestException as e:
-            st.error(f"⚠ Requests exception: {str(e)} | Data preview: {str(data)[:200]}")
-            return f"error: {str(e)}"
+            st.error(f"⚠ Requests exception: {str(e)} | Data: {str(data)[:200]}")
+            return "error"
         except Exception as e:
-            st.error(f"⚠ Unexpected exception: {str(e)} | Data preview: {str(data)[:200]}")
-            return f"error: {str(e)}"
+            st.error(f"⚠ Unexpected exception: {str(e)} | Data: {str(data)[:200]}")
+            return "error"
 
     def select_data(self, table: str, limit: int = 50) -> List[Dict]:
         try:
@@ -103,25 +101,23 @@ def clean_text(text: str) -> str:
     return text.strip()
 
 def get_keywords_for_channel(channel: str) -> List[str]:
-    clean_channel = channel.replace('r/', '').strip()
-    return CHANNEL_KEYWORDS.get(clean_channel, ["investing", "stocks", "financial", "market", "portfolio"])
+    return CHANNEL_KEYWORDS.get(channel.replace('r/','').strip(), ["investing","stocks","financial","market","portfolio"])
 
 def classify_text_hf(text: str, keywords: List[str], hf_token: str) -> Optional[Dict]:
     if not hf_token:
         return None
     try:
-        url = "https://api-inference.huggingface.co/models/facebook/bart-large-mnli"
+        api_url = "https://api-inference.huggingface.co/models/facebook/bart-large-mnli"
         headers = {"Authorization": f"Bearer {hf_token}"}
         payload = {"inputs": text[:512], "parameters": {"candidate_labels": keywords}}
-        response = requests.post(url, headers=headers, json=payload)
-        if response.status_code == 200:
-            result = response.json()
-            if 'labels' in result and 'scores' in result and result['scores'][0] > 0.25:
+        resp = requests.post(api_url, headers=headers, json=payload)
+        if resp.status_code == 200:
+            result = resp.json()
+            if result['scores'][0] > 0.25:
                 return {"label": result['labels'][0], "score": result['scores'][0]}
-        return None
     except Exception as e:
         st.warning(f"HuggingFace error: {str(e)}")
-        return None
+    return None
 
 # ------------------------------
 # Reddit RSS
@@ -194,6 +190,7 @@ def dashboard_page():
         total_inserted = 0
         all_logs = []
 
+        channels = [c.strip() for c in channels_input.split(",") if c.strip()]
         for i, channel in enumerate(channels):
             items = fetch_reddit_rss(channel, max_items)
             keywords = get_keywords_for_channel(channel)
@@ -213,50 +210,46 @@ def dashboard_page():
                 status = supabase.insert_data('reddit_filtered_posts', data)
                 if status == "inserted":
                     total_inserted += 1
-                    log_msg = f"✅ Inserted: {item['title'][:50]}..."
+                    log_msg = f"✅ Inserted: {data['title'][:50]}..."
                 elif status == "duplicate":
-                    log_msg = f"⚠ Skipped (duplicate): {item['title'][:50]}..."
+                    log_msg = f"⚠ Skipped (duplicate): {data['title'][:50]}..."
                 else:
-                    log_msg = f"❌ Error inserting: {item['title'][:50]} | Status: {status} | Data preview: {str(data)[:200]}"
+                    log_msg = f"❌ Insert error: {data['title'][:50]} | Status={status}"
                 all_logs.append(log_msg)
-                log_box.text("\n".join(all_logs[-10:]))  # show last 10 logs
+                log_box.text("\n".join(all_logs[-10:]))
                 time.sleep(0.05)
 
         st.success(f"✅ Complete! Processed {total_processed}, inserted {total_inserted}")
 
+    # Display latest posts
     st.subheader("📊 Latest 50 Filtered Posts")
     supabase = SupabaseClient(SUPABASE_URL, SUPABASE_KEY)
     results = supabase.select_data('reddit_filtered_posts', 50)
     if results:
         df = pd.DataFrame(results)
-        display_columns = ['channel','title','classification','confidence','keywords_used','created_at']
-        display_df = df[display_columns].copy()
-        display_df['confidence'] = display_df['confidence'].round(3)
-        st.dataframe(display_df, use_container_width=True)
+        display_cols = ['channel','title','classification','confidence','keywords_used','created_at']
+        st.dataframe(df[display_cols], use_container_width=True)
     else:
-        st.info("No posts available yet.")
+        st.info("No posts found.")
 
 # ------------------------------
 # Bulk X Posting Page
 # ------------------------------
 def bulk_posting_page():
-    st.header("🐦 Bulk X (Twitter) Posting")
-    drafts_input = st.text_area("Enter your post drafts (one per line)", height=300)
+    st.header("🐦 Bulk X Posting")
+    drafts_input = st.text_area("Enter one post per line", height=300)
     delay_seconds = st.slider("Delay between posts (seconds)", 1, 60, 10)
     
-    if st.button("🚀 Post All to X"):
-        if not X_BEARER_TOKEN:
-            st.error("X Bearer Token not set.")
-            return
+    if st.button("🚀 Post All"):
         drafts = [d.strip() for d in drafts_input.split('\n') if d.strip()]
         progress_bar = st.progress(0)
         for i, draft in enumerate(drafts):
             post_to_x(draft, X_BEARER_TOKEN)
-            progress_bar.progress((i+1)/len(drafts))
+            progress_bar.progress((i+1) / len(drafts))
             time.sleep(delay_seconds)
 
 # ------------------------------
-# Main App
+# Main
 # ------------------------------
 def main():
     st.title("📊 Investment Forum Dashboard")
