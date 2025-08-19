@@ -2,18 +2,16 @@ import streamlit as st
 import feedparser
 import requests
 import pandas as pd
-import time
 import re
+import time
 from datetime import datetime
 from typing import List, Dict, Optional
-import urllib.parse
-import os
 
 # ------------------------------
 # Configuration
 # ------------------------------
 st.set_page_config(
-    page_title="Social Media Dashboard",
+    page_title="Investment Forum Dashboard",
     page_icon="📊",
     layout="wide"
 )
@@ -23,8 +21,8 @@ st.set_page_config(
 # ------------------------------
 SUPABASE_URL = "https://dzddytphimhoxeccxqsw.supabase.co"
 SUPABASE_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImR6ZGR5dHBoaW1ob3hlY2N4cXN3Iiwicm9sZSI6InNlcnZpY2Vfcm9sZSIsImlhdCI6MTc1MTM2Njc5NCwiZXhwIjoyMDY2OTQyNzk0fQ.ng0ST7-V-cDBD0Jc80_0DFWXylzE-gte2I9MCX7qb0Q"
-X_BEARER_TOKEN = "AAAAAAAAAAAAAAAAAAAAAMqZ3gEAAAAAwNcDr%2FYHueePFl5mN35XZC%2FBKcI%3DHsgmTrfXb4SvlLnQ0TyjjH6XjU0kpATYq5RcDf6yArxrCFSXM7"
-HF_TOKEN = os.getenv("HF_TOKEN")
+X_BEARER_TOKEN = "AAAAAAAAAAAAAAAAAAAAAMqZ3gEAAAAAD2weeHOPZHMtouZgQvWGa2G8mh0%3DoPaDfJGkehIEfGFQ76n4EbMhuCcDM7dHBShS2SE7OoK4Lny8Pr"
+HF_TOKEN = "your_hf_token_here"  # replace with your HuggingFace token
 
 # ------------------------------
 # Channels & Keywords
@@ -43,8 +41,10 @@ CHANNEL_KEYWORDS = {
     "pennystocks": ["high risk", "speculation", "microcap stocks", "volatility", "momentum trading"]
 }
 
+DEFAULT_CHANNELS = list(CHANNEL_KEYWORDS.keys())
+
 # ------------------------------
-# Supabase client with logging & duplicate prevention
+# Supabase client
 # ------------------------------
 class SupabaseClient:
     def __init__(self, url: str, key: str):
@@ -57,27 +57,32 @@ class SupabaseClient:
         }
 
     def insert_data(self, table: str, data: Dict) -> str:
+        # Prevent duplicates based on title
         try:
-            where_clause = f"link=eq.{urllib.parse.quote(data['link'])}"
-            check = requests.get(f"{self.url}/rest/v1/{table}?select=*&{where_clause}", headers=self.headers)
-            if check.status_code == 200 and check.json():
+            check_resp = requests.get(
+                f"{self.url}/rest/v1/{table}?title=eq.{data['title']}",
+                headers=self.headers
+            )
+            if check_resp.status_code == 200 and len(check_resp.json()) > 0:
                 return "duplicate"
 
-            response = requests.post(f"{self.url}/rest/v1/{table}", headers=self.headers, json=data)
+            response = requests.post(
+                f"{self.url}/rest/v1/{table}",
+                headers=self.headers,
+                json=data
+            )
             if response.status_code in [200, 201]:
                 return "inserted"
-            st.warning(f"❌ Insert failed ({response.status_code}): {response.text} | Data: {str(data)[:200]}")
-            return "error"
-        except requests.exceptions.RequestException as e:
-            st.error(f"⚠ Requests exception: {str(e)} | Data: {str(data)[:200]}")
-            return "error"
+            return f"error_{response.status_code}"
         except Exception as e:
-            st.error(f"⚠ Unexpected exception: {str(e)} | Data: {str(data)[:200]}")
-            return "error"
+            return f"exception_{str(e)}"
 
     def select_data(self, table: str, limit: int = 50) -> List[Dict]:
         try:
-            response = requests.get(f"{self.url}/rest/v1/{table}?select=*&order=created_at.desc&limit={limit}", headers=self.headers)
+            response = requests.get(
+                f"{self.url}/rest/v1/{table}?order=created_at.desc&limit={limit}",
+                headers=self.headers
+            )
             if response.status_code == 200:
                 return response.json()
             return []
@@ -86,10 +91,11 @@ class SupabaseClient:
             return []
 
 # ------------------------------
-# Text processing & classification
+# Text processing functions
 # ------------------------------
 def strip_html_tags(text: str) -> str:
-    return re.sub('<.*?>', '', text)
+    clean = re.compile('<.*?>')
+    return re.sub(clean, '', text)
 
 def clean_text(text: str) -> str:
     if not text:
@@ -100,23 +106,27 @@ def clean_text(text: str) -> str:
     return text.strip()
 
 def get_keywords_for_channel(channel: str) -> List[str]:
-    return CHANNEL_KEYWORDS.get(channel.replace('r/','').strip(), ["investing","stocks","financial","market","portfolio"])
+    clean_channel = channel.replace('r/', '').strip()
+    return CHANNEL_KEYWORDS.get(clean_channel, ["investing", "stocks", "financial", "market", "portfolio"])
 
 def classify_text_hf(text: str, keywords: List[str], hf_token: str) -> Optional[Dict]:
     if not hf_token:
+        st.warning("HuggingFace token not set.")
         return None
     try:
         api_url = "https://api-inference.huggingface.co/models/facebook/bart-large-mnli"
         headers = {"Authorization": f"Bearer {hf_token}"}
         payload = {"inputs": text[:512], "parameters": {"candidate_labels": keywords}}
-        resp = requests.post(api_url, headers=headers, json=payload)
-        if resp.status_code == 200:
-            result = resp.json()
-            if result['scores'][0] > 0.25:
-                return {"label": result['labels'][0], "score": result['scores'][0]}
+        response = requests.post(api_url, headers=headers, json=payload)
+        if response.status_code == 200:
+            result = response.json()
+            if isinstance(result, dict) and 'labels' in result and 'scores' in result:
+                if result['scores'][0] > 0.25:
+                    return {'label': result['labels'][0], 'score': result['scores'][0]}
+        return None
     except Exception as e:
-        st.warning(f"HuggingFace error: {str(e)}")
-    return None
+        st.warning(f"HuggingFace API error: {str(e)}")
+        return None
 
 # ------------------------------
 # Reddit RSS fetching
@@ -144,23 +154,6 @@ def fetch_reddit_rss(channel: str, max_items: int = 20) -> List[Dict]:
     except Exception as e:
         st.error(f"Error fetching RSS for r/{channel}: {str(e)}")
         return []
-
-# ------------------------------
-# X Posting
-# ------------------------------
-def post_to_x(text: str, bearer_token: str) -> bool:
-    try:
-        url = "https://api.twitter.com/2/tweets"
-        headers = {"Authorization": f"Bearer {bearer_token}", "Content-Type": "application/json"}
-        payload = {"text": text[:280]}
-        resp = requests.post(url, headers=headers, json=payload)
-        if resp.status_code == 201:
-            return True
-        st.error(f"X posting failed | Status: {resp.status_code} | Response: {resp.text}")
-        return False
-    except Exception as e:
-        st.error(f"X posting exception: {str(e)}")
-        return False
 
 # ------------------------------
 # Dashboard page
@@ -253,10 +246,6 @@ def bulk_posting_page():
     delay_seconds = st.slider("Delay between posts (seconds)", 1, 60, 10)
     
     if st.button("🚀 Post All"):
-        if not X_BEARER_TOKEN:
-            st.error("X Bearer Token not set or invalid.")
-            return
-        
         drafts = [d.strip() for d in drafts_input.split('\n') if d.strip()]
         if not drafts:
             st.warning("No drafts to post.")
