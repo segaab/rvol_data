@@ -32,8 +32,8 @@ if not HF_TOKEN:
 # OAuth1.0a credentials for X API
 # --------------------
 
-API_KEY = "QXjPpeI0S84PbjTfrUYdtvXVV"
-API_SECRET = "HMEmAYaDDj6WoakCxJHjRweuLNiSrnN3smaHFepCfvgKJecHkO"
+API_KEY = "ztADVMLHe3scH9prv3jr8SyLf"
+API_SECRET = "4aA1mgyD5IodZIc3G8d6tVrGaUsL9BPuXYNhBCOKJNMbw1MptQ"
 ACCESS_TOKEN = "ztADVMLHe3scH9prv3jr8SyLf"
 ACCESS_TOKEN_SECRET = "4aA1mgyD5IodZIc3G8d6tVrGaUsL9BPuXYNhBCOKJNMbw1MptQ"
 
