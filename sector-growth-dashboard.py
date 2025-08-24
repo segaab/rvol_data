@@ -1,58 +1,27 @@
 # ==============================
 # Imports & Setup
 # ==============================
-import os
-import json
-import warnings
-from datetime import datetime, timedelta
-
-import numpy as np
-import pandas as pd
-import plotly.graph_objects as go
 import streamlit as st
-from supabase import create_client
+import pandas as pd
+import numpy as np
 from yahooquery import Ticker
+from plotly.subplots import make_subplots
+import plotly.graph_objects as go
+from datetime import datetime, timedelta
+import warnings
 
-warnings.filterwarnings("ignore")
+warnings.filterwarnings('ignore')
 
 # ==============================
 # Streamlit Page Config
 # ==============================
 st.set_page_config(
-    page_title="Sector Wave & Negative Space Dashboard",
+    page_title="Sector Wave Dashboard",
     page_icon="📊",
     layout="wide",
+    initial_sidebar_state="expanded"
 )
-st.title("📊 Sector Wave & Negative Space Dashboard")
 
-# ==============================
-# Supabase Configuration
-# ==============================
-@st.cache_resource
-def init_supabase():
-    try:
-        url = "https://dzddytphimhoxeccxqsw.supabase.co"
-        key = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImR6ZGR5dHBoaW1ob3hlY2N4cXN3Iiwicm9sZSI6InNlcnZpY2Vfcm9sZSIsImlhdCI6MTc1MTM2Njc5NCwiZXhwIjoyMDY2OTQyNzk0fQ.ng0ST7-V-cDBD0Jc80_0DFWXylzE-gte2I9MCX7qb0Q"
-        
-        client = create_client(url, key)
-        # Test connection
-        client.table("sectors").select("count", count="exact").execute()
-        return client
-    except Exception as e:
-        st.error(f"Failed to connect to Supabase: {str(e)}")
-        st.stop()
-        return None
-
-supabase = init_supabase()
-
-if supabase:
-    st.sidebar.success("✅ Database Connected")
-else:
-    st.sidebar.error("❌ Database Not Connected")
-
-# ==============================
-# Sector, Ticker & Leader Mapping
-# ==============================
 # ==============================
 # Sector, Ticker & Leader Mapping
 # ==============================
@@ -74,7 +43,33 @@ SECTORS = {
         "Medical Devices": ["ISRG", "MDT", "BSX", "EW", "ZBH", "ABMD"],
         "Digital Health": ["TDOC", "DOCS", "ONEM", "AMWL", "ACCD", "PHR"],
         "Genomics": ["DNA", "PACB", "TWST", "BLI", "TXG", "ME"]
+    }
+}
+
+LEADERS = {
+    "Technology & AI": {
+        "Artificial Intelligence": "NVDA",
+        "Semiconductors": "NVDA",
+        "Cloud Computing": "MSFT",
+        "Cybersecurity": "CRWD"
     },
+    "Clean Energy & EV": {
+        "Electric Vehicles": "TSLA",
+        "Battery Technology": "ALB",
+        "Solar": "SEDG",
+        "Wind & Renewables": "NEE"
+    },
+    "Biotech & Healthcare": {
+        "Biotech Innovation": "MRNA",
+        "Medical Devices": "ISRG",
+        "Digital Health": "TDOC",
+        "Genomics": "DNA"
+    }
+}
+# ==============================
+# Remaining Sectors & Leaders
+# ==============================
+SECTORS.update({
     "Financial Innovation": {
         "Fintech": ["SQ", "PYPL", "COIN", "HOOD", "SOFI", "UPST"],
         "Digital Payments": ["V", "MA", "PYPL", "SQ", "ADYEY", "AFRM"],
@@ -105,27 +100,9 @@ SECTORS = {
         "Grid Modernization": ["AEE", "NEE", "DUK", "SO", "PCG", "EIX"],
         "Construction Tech": ["PRIM", "ACM", "FLR", "PWR", "DY", "MTZ"]
     }
-}
+})
 
-LEADERS = {
-    "Technology & AI": {
-        "Artificial Intelligence": "NVDA",
-        "Semiconductors": "NVDA",
-        "Cloud Computing": "MSFT",
-        "Cybersecurity": "CRWD"
-    },
-    "Clean Energy & EV": {
-        "Electric Vehicles": "TSLA",
-        "Battery Technology": "ALB",
-        "Solar": "SEDG",
-        "Wind & Renewables": "NEE"
-    },
-    "Biotech & Healthcare": {
-        "Biotech Innovation": "MRNA",
-        "Medical Devices": "ISRG",
-        "Digital Health": "TDOC",
-        "Genomics": "DNA"
-    },
+LEADERS.update({
     "Financial Innovation": {
         "Fintech": "SQ",
         "Digital Payments": "V",
@@ -156,138 +133,151 @@ LEADERS = {
         "Grid Modernization": "AEE",
         "Construction Tech": "PRIM"
     }
-}
+})
 
 # ==============================
-# Helpers: Metrics & Phases
+# Database Setup
 # ==============================
-def normalize_prices(prices: pd.Series) -> pd.Series:
-    if prices.isna().all():
-        return pd.Series(index=prices.index, dtype=float)
-    first = prices.dropna().iloc[0]
-    if first == 0:
-        return pd.Series(index=prices.index, dtype=float)
-    return (prices / first - 1.0) * 100.0
+import sqlite3
+conn = sqlite3.connect("sector_wave.db", check_same_thread=False)
+cursor = conn.cursor()
 
-def calc_neg_space(leader_prices: pd.Series, follower_prices: pd.DataFrame):
-    leader_norm = normalize_prices(leader_prices)
-    if follower_prices is None or follower_prices.empty:
-        avg_follower_norm = pd.Series(0, index=leader_norm.index)
-    else:
-        follower_norms = pd.concat(
-            [normalize_prices(follower_prices[c]) for c in follower_prices.columns],
-            axis=1,
-        )
-        avg_follower_norm = follower_norms.mean(axis=1)
-    neg_space = leader_norm - avg_follower_norm
-    return neg_space, leader_norm, avg_follower_norm
-
-def roc(series: pd.Series, win: int) -> pd.Series:
-    if series is None or series.empty:
-        return pd.Series(dtype=float)
-    return series.pct_change(win) * 100.0
-
-def identify_phases(neg_space: pd.Series, roc_ns: pd.Series, acc_ns: pd.Series):
-    phases = []
-    for i in range(len(neg_space)):
-        ns = neg_space.iloc[i]
-        r = roc_ns.iloc[i] if i < len(roc_ns) else np.nan
-        a = acc_ns.iloc[i] if i < len(acc_ns) else np.nan
-        if np.isnan(r) or np.isnan(a):
-            phases.append("Inactive")
-        elif r > 0 and ns > 0:
-            phases.append("Initiation")
-        elif r < 0 and a < 0:
-            phases.append("Early Inflection")
-        elif r < 0 and a >= 0:
-            phases.append("Mid Inflection")
-        elif r >= 0 and ns <= 0:
-            phases.append("Late Inflection")
-        elif r > 0 and ns > 0:
-            phases.append("Interruption")
-        else:
-            phases.append("Inactive")
-    return phases
-
+cursor.executescript("""
+CREATE TABLE IF NOT EXISTS sectors (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    name TEXT UNIQUE
+);
+CREATE TABLE IF NOT EXISTS subsectors (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    name TEXT,
+    sector_id INTEGER,
+    UNIQUE(name, sector_id),
+    FOREIGN KEY(sector_id) REFERENCES sectors(id)
+);
+CREATE TABLE IF NOT EXISTS tickers (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    symbol TEXT UNIQUE,
+    name TEXT,
+    sector_id INTEGER,
+    FOREIGN KEY(sector_id) REFERENCES sectors(id)
+);
+CREATE TABLE IF NOT EXISTS subsector_tickers (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    subsector_id INTEGER,
+    ticker_id INTEGER,
+    is_leader BOOLEAN DEFAULT 0,
+    UNIQUE(subsector_id, ticker_id),
+    FOREIGN KEY(subsector_id) REFERENCES subsectors(id),
+    FOREIGN KEY(ticker_id) REFERENCES tickers(id)
+);
+CREATE TABLE IF NOT EXISTS price_data (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    ticker_id INTEGER,
+    date TEXT,
+    adj_close REAL,
+    UNIQUE(ticker_id, date),
+    FOREIGN KEY(ticker_id) REFERENCES tickers(id)
+);
+CREATE TABLE IF NOT EXISTS sector_metrics (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    sector_id INTEGER,
+    subsector_id INTEGER,
+    leader_id INTEGER,
+    date TEXT,
+    roc_window INTEGER,
+    leader_norm REAL,
+    followers_avg_norm REAL,
+    negative_space REAL,
+    roc_neg_space REAL,
+    acc_neg_space REAL,
+    phase TEXT,
+    UNIQUE(subsector_id, leader_id, date, roc_window),
+    FOREIGN KEY(sector_id) REFERENCES sectors(id),
+    FOREIGN KEY(subsector_id) REFERENCES subsectors(id),
+    FOREIGN KEY(leader_id) REFERENCES tickers(id)
+);
+""")
+conn.commit()
 
 # ==============================
-# Database Operations
+# Price Fetching & Update
 # ==============================
-@st.cache_data(ttl="1h")
-def get_sector_id(sector_name: str):
-    try:
-        res = supabase.table("sectors").select("id").eq("name", sector_name).execute()
-        if res.data:
-            return res.data[0]["id"]
-        ins = supabase.table("sectors").insert({"name": sector_name}).execute()
-        return ins.data[0]["id"]
-    except Exception as e:
-        st.error(f"Error getting sector ID: {str(e)}")
+import yfinance as yf
+from datetime import datetime, timedelta
+
+def update_prices(tickers):
+    for symbol in tickers:
+        data = yf.download(symbol, period="1y", interval="1d")
+        for date, row in data.iterrows():
+            cursor.execute("""
+                INSERT OR IGNORE INTO price_data (ticker_id, date, adj_close)
+                SELECT t.id, ?, ? FROM tickers t WHERE t.symbol = ?
+            """, (date.strftime("%Y-%m-%d"), row['Adj Close'], symbol))
+    conn.commit()
+
+all_tickers = set()
+for sector, subsectors in SECTORS.items():
+    for tick_list in subsectors.values():
+        all_tickers.update(tick_list)
+update_prices(list(all_tickers))
+
+# ==============================
+# Metrics Calculation
+# ==============================
+import pandas as pd
+import numpy as np
+
+def calculate_metrics(subsector_name, roc_window=20):
+    cursor.execute("""
+        SELECT t.id, t.symbol FROM tickers t
+        JOIN subsector_tickers st ON t.id = st.ticker_id
+        JOIN subsectors s ON s.id = st.subsector_id
+        WHERE s.name = ?
+    """, (subsector_name,))
+    tickers = cursor.fetchall()
+    
+    df_prices = pd.DataFrame()
+    for tid, symbol in tickers:
+        df = pd.read_sql("""
+            SELECT date, adj_close FROM price_data
+            WHERE ticker_id = ?
+            ORDER BY date
+        """, conn, params=(tid,))
+        df = df.rename(columns={'adj_close': symbol}).set_index('date')
+        df_prices = pd.concat([df_prices, df], axis=1)
+
+    if df_prices.empty:
         return None
 
-@st.cache_data(ttl="1h")
-def get_subsector_id(subsector_name: str, sector_id: int):
-    try:
-        res = (
-            supabase.table("subsectors")
-            .select("id")
-            .eq("name", subsector_name)
-            .eq("sector_id", sector_id)
-            .execute()
-        )
-        if res.data:
-            return res.data[0]["id"]
-        ins = supabase.table("subsectors").insert({"name": subsector_name, "sector_id": sector_id}).execute()
-        return ins.data[0]["id"]
-    except Exception as e:
-        st.error(f"Error getting subsector ID: {str(e)}")
-        return None
-
-@st.cache_data(ttl="1h")
-def get_ticker_id(ticker_symbol: str):
-    try:
-        res = supabase.table("tickers").select("id").eq("symbol", ticker_symbol).execute()
-        if res.data:
-            return res.data[0]["id"]
-        ins = supabase.table("tickers").insert({"symbol": ticker_symbol}).execute()
-        return ins.data[0]["id"]
-    except Exception as e:
-        st.error(f"Error getting ticker ID: {str(e)}")
-        return None
-
-def ensure_subsector_tickers(subsector_id: int, ticker_ids: list[int], leader_id: int):
-    try:
-        for tid in ticker_ids:
-            try:
-                res = (
-                    supabase.table("subsector_tickers")
-                    .select("id,is_leader")
-                    .eq("subsector_id", subsector_id)
-                    .eq("ticker_id", tid)
-                    .execute()
-                )
-                
-                if not res.data:
-                    supabase.table("subsector_tickers").insert(
-                        {"subsector_id": subsector_id, "ticker_id": tid, "is_leader": tid == leader_id}
-                    ).execute()
-                else:
-                    mapping_id = res.data[0]["id"]
-                    supabase.table("subsector_tickers").update(
-                        {"is_leader": tid == leader_id}
-                    ).eq("id", mapping_id).execute()
-            except Exception as e:
-                st.warning(f"Error processing ticker {tid}: {str(e)}")
-                continue
-    except Exception as e:
-        st.error(f"Error ensuring subsector tickers: {str(e)}")
+    roc = df_prices.pct_change(periods=roc_window)
+    metrics_list = []
+    for symbol in df_prices.columns:
+        leader = LEADERS.get(subsector_name.split()[0], {}).get(subsector_name, symbol)
+        leader_series = roc.get(leader, pd.Series(0))
+        followers = [col for col in df_prices.columns if col != leader]
+        followers_avg = roc[followers].mean(axis=1)
+        neg_space = leader_series - followers_avg
+        metrics_list.append((subsector_name, leader, leader_series.iloc[-1],
+                             followers_avg.iloc[-1], neg_space.iloc[-1]))
+    return metrics_list
 
 # ==============================
-# Sidebar Controls & Data Processing
+# Streamlit Dashboard
 # ==============================
-sector = st.sidebar.selectbox("Select Sector", list(SECTORS.keys()))
+import streamlit as st
+st.set_page_config(page_title="Sector Wave Dashboard", layout="wide")
 
-if isinstance(SECTORS[sector], dict):
-    subsector_list = list(SECTORS[sector].keys())
-    subsector = st.sidebar.selectbox("Select Niche/Subsector", subsector_list)
-        
+st.title("Sector Wave Detection Dashboard")
+subsector = st.selectbox("Select Subsector", [s for sector in SECTORS.values() for s in sector.keys()])
+roc_window = st.slider("ROC Window (Days)", 5, 60, 20)
+metrics = calculate_metrics(subsector, roc_window)
+
+if metrics:
+    for m in metrics:
+        st.write(f"Subsector: {m[0]}")
+        st.write(f"Leader: {m[1]}")
+        st.write(f"Leader Norm: {m[2]:.4f}")
+        st.write(f"Followers Avg Norm: {m[3]:.4f}")
+        st.write(f"Negative Space: {m[4]:.4f}")
+else:
+    st.write("No price data available for this subsector.")
