@@ -32,8 +32,8 @@ st.title("📊 Sector Wave & Negative Space Dashboard")
 # ==============================
 @st.cache_resource
 def init_supabase():
-    url = os.getenv("SUPABASE_URL")
-    key = os.getenv("SUPABASE_KEY")
+    url = "https://dzddytphimhoxeccxqsw.supabase.co"
+    key = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImR6ZGR5dHBoaW1ob3hlY2N4cXN3Iiwicm9sZSI6InNlcnZpY2Vfcm9sZSIsImlhdCI6MTc1MTM2Njc5NCwiZXhwIjoyMDY2OTQyNzk0fQ.ng0ST7-V-cDBD0Jc80_0DFWXylzE-gte2I9MCX7qb0Q"
     if not url or not key:
         st.error(
             "Supabase credentials not found. "
