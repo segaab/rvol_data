@@ -1,159 +1,23 @@
 # ==============================
-# Imports & Setup
+# Sector Wave Dashboard - Part 1: Database Setup & Tickers
 # ==============================
-import streamlit as st
-import pandas as pd
-import numpy as np
-from yahooquery import Ticker
-from plotly.subplots import make_subplots
-import plotly.graph_objects as go
-from datetime import datetime, timedelta
-import warnings
 
-warnings.filterwarnings('ignore')
-
-# ==============================
-# Streamlit Page Config
-# ==============================
-st.set_page_config(
-    page_title="Sector Wave Dashboard",
-    page_icon="📊",
-    layout="wide",
-    initial_sidebar_state="expanded"
-)
-
-# ==============================
-# Sector, Ticker & Leader Mapping
-# ==============================
-SECTORS = {
-    "Technology & AI": {
-        "Artificial Intelligence": ["NVDA", "AMD", "PLTR", "MSFT", "GOOG", "AI"],
-        "Semiconductors": ["NVDA", "AMD", "INTC", "TSM", "AMAT", "MU"],
-        "Cloud Computing": ["MSFT", "AMZN", "GOOGL", "CRM", "NET", "SNOW"],
-        "Cybersecurity": ["CRWD", "PANW", "ZS", "FTNT", "S", "GEN"]
-    },
-    "Clean Energy & EV": {
-        "Electric Vehicles": ["TSLA", "RIVN", "LCID", "NIO", "LI", "XPEV"],
-        "Battery Technology": ["ALB", "LTHM", "LAC", "SQM", "PLL", "FREY"],
-        "Solar": ["SEDG", "ENPH", "FSLR", "SPWR", "NOVA", "MAXN"],
-        "Wind & Renewables": ["NEE", "DNNGY", "DQ", "VWDRY", "CWEN", "BEP"]
-    },
-    "Biotech & Healthcare": {
-        "Biotech Innovation": ["MRNA", "BNTX", "CRSP", "EDIT", "NTLA", "BEAM"],
-        "Medical Devices": ["ISRG", "MDT", "BSX", "EW", "ZBH", "ABMD"],
-        "Digital Health": ["TDOC", "DOCS", "ONEM", "AMWL", "ACCD", "PHR"],
-        "Genomics": ["DNA", "PACB", "TWST", "BLI", "TXG", "ME"]
-    }
-}
-
-LEADERS = {
-    "Technology & AI": {
-        "Artificial Intelligence": "NVDA",
-        "Semiconductors": "NVDA",
-        "Cloud Computing": "MSFT",
-        "Cybersecurity": "CRWD"
-    },
-    "Clean Energy & EV": {
-        "Electric Vehicles": "TSLA",
-        "Battery Technology": "ALB",
-        "Solar": "SEDG",
-        "Wind & Renewables": "NEE"
-    },
-    "Biotech & Healthcare": {
-        "Biotech Innovation": "MRNA",
-        "Medical Devices": "ISRG",
-        "Digital Health": "TDOC",
-        "Genomics": "DNA"
-    }
-}
-# ==============================
-# Remaining Sectors & Leaders
-# ==============================
-SECTORS.update({
-    "Financial Innovation": {
-        "Fintech": ["SQ", "PYPL", "COIN", "HOOD", "SOFI", "UPST"],
-        "Digital Payments": ["V", "MA", "PYPL", "SQ", "ADYEY", "AFRM"],
-        "Blockchain": ["COIN", "MSTR", "MARA", "RIOT", "HUT", "BITF"],
-        "Neo-Banking": ["SOFI", "NU", "DAVE", "PSEC", "LC", "OCFT"]
-    },
-    "Web3 & Metaverse": {
-        "Gaming": ["RBLX", "U", "TTWO", "EA", "ATVI", "PLTK"],
-        "Social Platforms": ["META", "SNAP", "PINS", "MTCH", "BMBL", "HOOD"],
-        "Digital Assets": ["COIN", "SI", "MSTR", "BITF", "HUT", "RIOT"],
-        "AR/VR": ["META", "SNAP", "U", "MTTR", "IMMR", "VUZI"]
-    },
-    "Space & Defense": {
-        "Space Technology": ["SPCE", "RKLB", "ASTR", "MNTS", "SATL", "RDW"],
-        "Defense": ["LMT", "RTX", "NOC", "GD", "BA", "HII"],
-        "Satellite Communications": ["IRDM", "GSAT", "MAXR", "VSAT", "SATS", "LLAP"],
-        "Aerospace": ["BA", "AIR", "TDG", "HEI", "SPR", "AJRD"]
-    },
-    "Future Materials": {
-        "Advanced Materials": ["DD", "CE", "PPG", "ALB", "CTVA", "ECL"],
-        "Rare Earth Elements": ["MP", "LTHM", "LAC", "UUUU", "CCJ", "DNN"],
-        "Nanotechnology": ["NANO", "CAMT", "FORM", "NCTY", "WATT", "NNDM"],
-        "Green Materials": ["OC", "TREX", "AZEK", "JCI", "TTEK", "CLH"]
-    },
-    "Infrastructure": {
-        "Smart Cities": ["BLDR", "PWR", "DY", "MTZ", "WIRE", "AGX"],
-        "5G Networks": ["COMM", "BAND", "ERIC", "NOK", "AVNW", "IDCC"],
-        "Grid Modernization": ["AEE", "NEE", "DUK", "SO", "PCG", "EIX"],
-        "Construction Tech": ["PRIM", "ACM", "FLR", "PWR", "DY", "MTZ"]
-    }
-})
-
-LEADERS.update({
-    "Financial Innovation": {
-        "Fintech": "SQ",
-        "Digital Payments": "V",
-        "Blockchain": "COIN",
-        "Neo-Banking": "SOFI"
-    },
-    "Web3 & Metaverse": {
-        "Gaming": "RBLX",
-        "Social Platforms": "META",
-        "Digital Assets": "COIN",
-        "AR/VR": "META"
-    },
-    "Space & Defense": {
-        "Space Technology": "SPCE",
-        "Defense": "LMT",
-        "Satellite Communications": "IRDM",
-        "Aerospace": "BA"
-    },
-    "Future Materials": {
-        "Advanced Materials": "DD",
-        "Rare Earth Elements": "MP",
-        "Nanotechnology": "NANO",
-        "Green Materials": "OC"
-    },
-    "Infrastructure": {
-        "Smart Cities": "BLDR",
-        "5G Networks": "COMM",
-        "Grid Modernization": "AEE",
-        "Construction Tech": "PRIM"
-    }
-})
-
-# ==============================
-# Database Setup
-# ==============================
 import sqlite3
+from yahooquery import Ticker
+
+# ------------------------------
+# Database Setup
+# ------------------------------
 conn = sqlite3.connect("sector_wave.db", check_same_thread=False)
 cursor = conn.cursor()
 
 cursor.executescript("""
 CREATE TABLE IF NOT EXISTS sectors (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
-    name TEXT UNIQUE
+    name TEXT UNIQUE,
+    symbol TEXT UNIQUE
 );
-CREATE TABLE IF NOT EXISTS subsectors (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    name TEXT,
-    sector_id INTEGER,
-    UNIQUE(name, sector_id),
-    FOREIGN KEY(sector_id) REFERENCES sectors(id)
-);
+
 CREATE TABLE IF NOT EXISTS tickers (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     symbol TEXT UNIQUE,
@@ -161,6 +25,15 @@ CREATE TABLE IF NOT EXISTS tickers (
     sector_id INTEGER,
     FOREIGN KEY(sector_id) REFERENCES sectors(id)
 );
+
+CREATE TABLE IF NOT EXISTS subsectors (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    name TEXT,
+    sector_id INTEGER,
+    UNIQUE(name, sector_id),
+    FOREIGN KEY(sector_id) REFERENCES sectors(id)
+);
+
 CREATE TABLE IF NOT EXISTS subsector_tickers (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     subsector_id INTEGER,
@@ -170,7 +43,8 @@ CREATE TABLE IF NOT EXISTS subsector_tickers (
     FOREIGN KEY(subsector_id) REFERENCES subsectors(id),
     FOREIGN KEY(ticker_id) REFERENCES tickers(id)
 );
-CREATE TABLE IF NOT EXISTS price_data (
+
+CREATE TABLE IF NOT EXISTS price_data_an (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     ticker_id INTEGER,
     date TEXT,
@@ -178,6 +52,7 @@ CREATE TABLE IF NOT EXISTS price_data (
     UNIQUE(ticker_id, date),
     FOREIGN KEY(ticker_id) REFERENCES tickers(id)
 );
+
 CREATE TABLE IF NOT EXISTS sector_metrics (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     sector_id INTEGER,
@@ -199,85 +74,193 @@ CREATE TABLE IF NOT EXISTS sector_metrics (
 """)
 conn.commit()
 
-# ==============================
-# Price Fetching & Update
-# ==============================
-import yfinance as yf
-from datetime import datetime, timedelta
+# ------------------------------
+# Insert sectors, subsectors, and tickers
+# ------------------------------
+# (SECTORS, LEADERS, and tickers with company names as you provided)
+# Paste your SECTORS dict, LEADERS dict, and the INSERT INTO tickers (...) block here
 
-def update_prices(tickers):
-    for symbol in tickers:
-        data = yf.download(symbol, period="1y", interval="1d")
-        for date, row in data.iterrows():
-            cursor.execute("""
-                INSERT OR IGNORE INTO price_data (ticker_id, date, adj_close)
-                SELECT t.id, ?, ? FROM tickers t WHERE t.symbol = ?
-            """, (date.strftime("%Y-%m-%d"), row['Adj Close'], symbol))
-    conn.commit()
-
-all_tickers = set()
-for sector, subsectors in SECTORS.items():
-    for tick_list in subsectors.values():
-        all_tickers.update(tick_list)
-update_prices(list(all_tickers))
+conn.commit()
+conn.close()
+print("✅ Database setup and tickers inserted successfully")
 
 # ==============================
-# Metrics Calculation
+# Sector Wave Dashboard - Part 2: Data Fetching & Metrics
 # ==============================
+
+import sqlite3
 import pandas as pd
 import numpy as np
+from yahooquery import Ticker
+from datetime import datetime, timedelta
 
-def calculate_metrics(subsector_name, roc_window=20):
-    cursor.execute("""
-        SELECT t.id, t.symbol FROM tickers t
-        JOIN subsector_tickers st ON t.id = st.ticker_id
-        JOIN subsectors s ON s.id = st.subsector_id
-        WHERE s.name = ?
-    """, (subsector_name,))
-    tickers = cursor.fetchall()
-    
-    df_prices = pd.DataFrame()
-    for tid, symbol in tickers:
-        df = pd.read_sql("""
-            SELECT date, adj_close FROM price_data
-            WHERE ticker_id = ?
-            ORDER BY date
-        """, conn, params=(tid,))
-        df = df.rename(columns={'adj_close': symbol}).set_index('date')
-        df_prices = pd.concat([df_prices, df], axis=1)
+conn = sqlite3.connect("sector_wave.db", check_same_thread=False)
+cursor = conn.cursor()
 
-    if df_prices.empty:
-        return None
+# ------------------------------
+# Helper functions
+# ------------------------------
+def get_ticker_id(symbol: str):
+    cursor.execute("SELECT id FROM tickers WHERE symbol=?", (symbol,))
+    res = cursor.fetchone()
+    return res[0] if res else None
 
-    roc = df_prices.pct_change(periods=roc_window)
-    metrics_list = []
-    for symbol in df_prices.columns:
-        leader = LEADERS.get(subsector_name.split()[0], {}).get(subsector_name, symbol)
-        leader_series = roc.get(leader, pd.Series(0))
-        followers = [col for col in df_prices.columns if col != leader]
-        followers_avg = roc[followers].mean(axis=1)
-        neg_space = leader_series - followers_avg
-        metrics_list.append((subsector_name, leader, leader_series.iloc[-1],
-                             followers_avg.iloc[-1], neg_space.iloc[-1]))
-    return metrics_list
+def fetch_prices(tickers_list, start_date, end_date):
+    all_data = {}
+    batch_size = 10
+    for i in range(0, len(tickers_list), batch_size):
+        batch = tickers_list[i:i+batch_size]
+        tk = Ticker(batch)
+        hist = tk.history(start=start_date, end=end_date, interval="1d")
+        if isinstance(hist.index, pd.MultiIndex):
+            for ticker in batch:
+                ticker_data = hist.xs(ticker, level='symbol', drop_level=False)
+                if not ticker_data.empty:
+                    df = ticker_data.reset_index()
+                    df['symbol'] = ticker
+                    all_data[ticker] = df
+        else:
+            if not hist.empty:
+                df = hist.reset_index()
+                df['symbol'] = batch[0]
+                all_data[batch[0]] = df
+    return all_data
+
+def normalize_series(series: pd.Series) -> pd.Series:
+    if series.isna().all() or len(series) == 0 or series.iloc[0] == 0:
+        return pd.Series(index=series.index, dtype=float)
+    return (series / series.iloc[0] - 1) * 100
+
+def calculate_metrics(leader_prices: pd.Series, follower_prices: pd.DataFrame, roc_window=14):
+    leader_norm = normalize_series(leader_prices)
+    if follower_prices.empty:
+        followers_avg = pd.Series(0, index=leader_norm.index)
+    else:
+        followers_norm = pd.DataFrame({col: normalize_series(follower_prices[col]) 
+                                      for col in follower_prices.columns})
+        followers_avg = followers_norm.mean(axis=1)
+    neg_space = leader_norm - followers_avg
+    roc_neg_space = neg_space.pct_change(periods=roc_window) * 100
+    acc_neg_space = roc_neg_space.diff(roc_window)
+
+    phases = []
+    for i in range(len(neg_space)):
+        ns = neg_space.iloc[i]
+        r = roc_neg_space.iloc[i] if i >= roc_window else np.nan
+        a = acc_neg_space.iloc[i] if i >= 2*roc_window else np.nan
+        if np.isnan(r) or np.isnan(a):
+            phases.append("Inactive")
+        elif r > 0 and ns > 0:
+            phases.append("Initiation")
+        elif r < 0 and a < 0:
+            phases.append("Early Inflection")
+        elif r < 0 and a >= 0:
+            phases.append("Mid Inflection")
+        elif r >= 0 and ns <= 0:
+            phases.append("Late Inflection")
+        elif r > 0 and ns > 0:
+            phases.append("Interruption")
+        else:
+            phases.append("Inactive")
+    return leader_norm, followers_avg, neg_space, roc_neg_space, acc_neg_space, phases
+
+# ------------------------------
+# Fetch prices for all tickers
+# ------------------------------
+all_tickers = [row[0] for row in cursor.execute("SELECT symbol FROM tickers").fetchall()]
+end_date = datetime.today()
+start_date = end_date - timedelta(days=365)
+price_data = fetch_prices(all_tickers, start_date.strftime('%Y-%m-%d'), end_date.strftime('%Y-%m-%d'))
+
+# Insert price data
+for symbol, df in price_data.items():
+    ticker_id = get_ticker_id(symbol)
+    if not ticker_id:
+        continue
+    for _, row in df.iterrows():
+        date_str = row['date'].strftime('%Y-%m-%d') if isinstance(row['date'], pd.Timestamp) else row['date']
+        cursor.execute("""
+        INSERT OR REPLACE INTO price_data (ticker_id, date, adj_close)
+        VALUES (?, ?, ?)
+        """, (ticker_id, date_str, float(row.get('adjclose', row.get('close', 0)))))
+conn.commit()
+print("✅ Prices inserted/updated successfully")
+
+conn.close()
 
 # ==============================
-# Streamlit Dashboard
+# Sector Wave Dashboard - Part 3: Streamlit Dashboard
 # ==============================
+
 import streamlit as st
-st.set_page_config(page_title="Sector Wave Dashboard", layout="wide")
+import pandas as pd
+import sqlite3
+from datetime import datetime, timedelta
 
-st.title("Sector Wave Detection Dashboard")
-subsector = st.selectbox("Select Subsector", [s for sector in SECTORS.values() for s in sector.keys()])
-roc_window = st.slider("ROC Window (Days)", 5, 60, 20)
-metrics = calculate_metrics(subsector, roc_window)
+st.set_page_config(page_title="Sector Wave Dashboard", page_icon="📊", layout="wide")
+st.title("📊 Sector Wave Dashboard")
 
-if metrics:
-    for m in metrics:
-        st.write(f"Subsector: {m[0]}")
-        st.write(f"Leader: {m[1]}")
-        st.write(f"Leader Norm: {m[2]:.4f}")
-        st.write(f"Followers Avg Norm: {m[3]:.4f}")
-        st.write(f"Negative Space: {m[4]:.4f}")
+conn = sqlite3.connect("sector_wave.db", check_same_thread=False)
+
+# Sidebar: Select Sector
+sectors_df = pd.read_sql("SELECT id, name FROM sectors", conn)
+sector_id = st.sidebar.selectbox("Select Sector", options=sectors_df['id'], 
+                                 format_func=lambda x: sectors_df.loc[sectors_df['id']==x,'name'].iloc[0])
+
+# Sidebar: Select Subsector
+subsectors_df = pd.read_sql(f"SELECT id, name FROM subsectors WHERE sector_id = {sector_id}", conn)
+if not subsectors_df.empty:
+    subsector_id = st.sidebar.selectbox("Select Subsector", options=subsectors_df['id'], 
+                                       format_func=lambda x: subsectors_df.loc[subsectors_df['id']==x,'name'].iloc[0])
+    
+    leader_df = pd.read_sql(f"""
+    SELECT t.id, t.symbol FROM subsector_tickers st
+    JOIN tickers t ON st.ticker_id = t.id
+    WHERE st.subsector_id = {subsector_id} AND st.is_leader = 1
+    """, conn)
+    
+    if not leader_df.empty:
+        leader_id = leader_df['id'].iloc[0]
+        leader_symbol = leader_df['symbol'].iloc[0]
+        date_range = st.sidebar.date_input(
+            "Select Date Range",
+            value=[datetime.now() - timedelta(days=180), datetime.now()],
+            max_value=datetime.now()
+        )
+        start_date = date_range[0].strftime('%Y-%m-%d')
+        end_date = date_range[1].strftime('%Y-%m-%d') if len(date_range)>1 else datetime.now().strftime('%Y-%m-%d')
+        
+        metrics_df = pd.read_sql(f"""
+        SELECT date, leader_norm, followers_avg_norm, negative_space, 
+               roc_neg_space, acc_neg_space, phase
+        FROM sector_metrics
+        WHERE subsector_id = {subsector_id} AND leader_id = {leader_id}
+          AND date BETWEEN '{start_date}' AND '{end_date}'
+        ORDER BY date
+        """, conn)
+        
+        if not metrics_df.empty:
+            metrics_df['date'] = pd.to_datetime(metrics_df['date'])
+            metrics_df = metrics_df.set_index('date')
+            st.subheader("Normalized Price Comparison")
+            st.line_chart(metrics_df[['leader_norm','followers_avg_norm']])
+            
+            st.subheader("Negative Space & ROC")
+            st.line_chart(metrics_df[['negative_space','roc_neg_space']])
+            
+            st.subheader("Current Phase")
+            st.info(f"**{metrics_df['phase'].iloc[-1]}**")
+            
+            st.subheader("Phase Distribution")
+            st.bar_chart(metrics_df['phase'].value_counts())
+            
+            csv = metrics_df.to_csv()
+            st.download_button("Download CSV", csv, file_name=f"{leader_symbol}_metrics.csv", mime="text/csv")
+        else:
+            st.warning("No metrics data for selected range")
+    else:
+        st.error("No leader defined for this subsector")
 else:
-    st.write("No price data available for this subsector.")
+    st.warning("No subsectors defined for this sector")
+
+conn.close()
