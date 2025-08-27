@@ -1,3 +1,5 @@
+s, use_container_width=True)
+
 # ---------------------------
 # Chunk 1: Imports, config, and data loading
 # ---------------------------
@@ -113,8 +115,6 @@ crash_pct = st.sidebar.number_input("Crash % threshold", value=0.25, min_value=0
 L_min_ratio = st.sidebar.number_input("Liquidity min ratio", value=0.10, min_value=0.01, max_value=1.0, step=0.01, format="%.2f")
 I_crit = st.sidebar.number_input("Imbalance threshold", value=0.20, min_value=0.01, max_value=2.0, step=0.01, format="%.2f")
 persist_days = st.sidebar.number_input("Persistence days (liquidity crash)", value=3, min_value=1, max_value=30)
-
-
 # ---------------------------
 # Chunk 2: Simulation and rolling crash probabilities
 # ---------------------------
@@ -320,3 +320,4 @@ def compute_pnl(long_df: pd.DataFrame, fee_bps: float = 5.0, borrow_bps_daily: f
 bt_row, equity_curves = compute_pnl(long_bt)
 st.subheader("Equity curves (normalized)")
 st.line_chart(equity_curves, use_container_width=True)
+ 
