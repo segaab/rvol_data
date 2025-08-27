@@ -402,3 +402,454 @@ st.dataframe(
 
 
 st.info("Notes: Shorting small-cap crypto can be illiquid and costly. Borrow costs and slippage are simplified here.")
+
+# ==============================
+# Chunk 2 — Backtesting Engine & Strategy Rules
+# ==============================
+
+# Constants for backtest
+STARTING_BALANCE = 600.0
+FEE_BPS = 5.0          # transaction fee in basis points for each rebalance
+BORROW_BPS_DAILY = 1.0 # borrow cost in bps per day for shorts
+SLIPPAGE_ETA = 0.02    # slippage scale factor for notional vs liquidity
+SLIPPAGE_DELTA = 0.5   # slippage exponent
+
+def build_long_strategies(df):
+    """
+    Construct three simple long-side strategies that reduce/exit on rising crash risk.
+    Returns df with position fraction columns: position_s1, position_s2, position_s3
+    - S1: Liquidity guardrail (exit if Liquidity low & CrashSignal=1)
+    - S2: Momentum + reduce on risk (enter on positive momentum, reduce size if CrashSignal=1)
+    - S3: Bayesian-style posterior threshold (simple rolling avg of crash prob proxy)
+    """
+    x = df.copy()
+    n = len(x)
+    # naive crash probability proxy: rolling mean of CrashSignal
+    x["crash_prob_proxy"] = x["CrashSignal"].rolling(30, min_periods=1).mean().fillna(0.0)
+
+    # S1: default 100% long, remove exposure when crash signal present or liquidity below quantile
+    liq_q = x["Liquidity"].quantile(0.20)
+    x["position_s1"] = 1.0
+    x.loc[(x["CrashSignal"] == 1) | (x["Liquidity"] <= liq_q), "position_s1"] = 0.0
+
+    # S2: momentum + size reduce
+    mom_k = 20
+    x["mom20"] = x["Close"] / x["Close"].shift(mom_k) - 1.0
+    x["position_s2"] = 0.0
+    x.loc[(x["mom20"] > 0) & (x["Liquidity"] > x["Liquidity"].median()), "position_s2"] = 1.0
+    # reduce factor when crash risk high
+    x.loc[x["crash_prob_proxy"] > 0.25, "position_s2"] *= 0.5
+
+    # S3: rolling posterior (simple)
+    x["post_mean"] = x["crash_prob_proxy"].rolling(60, min_periods=1).mean()
+    x["position_s3"] = 1.0
+    x.loc[x["post_mean"] > 0.30, "position_s3"] = 0.0
+
+    return x
+
+def build_short_strategies(df):
+    """
+    Construct three short-entry strategies using early detection signals.
+    Returns df with short flags short_A, short_B, short_C where 1.0 means full short exposure.
+    - A: ECDS-based (use CrashSignal + liquidity thin)
+    - B: Microstructure breakdown (vol spike + liquidity drop)
+    - C: Posterior mean-based short
+    """
+    x = df.copy()
+    # A: require crash signal and liquidity thin (quantile)
+    thin_q = x["Liquidity"].quantile(0.30)
+    x["short_A"] = 0.0
+    x.loc[(x["CrashSignal"] == 1) & (x["Liquidity"] <= thin_q), "short_A"] = 1.0
+
+    # B: microstructure breakdown: recent vol spike + liquidity drop
+    x["ret"] = np.log(x["Close"]).diff().fillna(0.0)
+    x["vol_14"] = x["ret"].rolling(14, min_periods=1).std().fillna(0.0)
+    # z-score like scaling
+    vol_p1, vol_p99 = np.nanpercentile(x["vol_14"].fillna(0.0), [1,99])
+    x["vol_z"] = ((x["vol_14"] - vol_p1) / (vol_p99 - vol_p1 + 1e-9)).clip(0,1)
+    # liquidity inverse z
+    liq_p1, liq_p99 = np.nanpercentile(1.0/(x["Liquidity"]+1e-9), [1,99])
+    x["liq_inv_z"] = ((1.0/(x["Liquidity"]+1e-9) - liq_p1) / (liq_p99 - liq_p1 + 1e-9)).clip(0,1)
+    x["prob_slope"] = x["CrashSignal"].diff(5).fillna(0.0)
+    psl1, psl99 = np.nanpercentile(x["prob_slope"].fillna(0.0), [1,99])
+    x["prob_slope_z"] = ((x["prob_slope"] - psl1) / (psl99 - psl1 + 1e-9)).clip(0,1)
+
+    x["short_B"] = 0.0
+    x.loc[(x["vol_z"] >= 0.7) & (x["liq_inv_z"] >= 0.7) & (x["prob_slope_z"] >= 0.6), "short_B"] = 1.0
+
+    # C: posterior mean-based
+    x["posterior_mean"] = x["CrashSignal"].rolling(30, min_periods=1).mean()
+    x["short_C"] = 0.0
+    x.loc[x["posterior_mean"] >= 0.40, "short_C"] = 1.0
+
+    return x
+
+def slippage_model(notional, liquidity):
+    """
+    Simple slippage model:
+    slippage_bps = eta * (notional / liquidity)^delta
+    We cap slippage to e.g. 50% of price (extreme).
+    Returns fractional price impact (positive = cost)
+    """
+    if liquidity <= 0:
+        return 1.0  # total loss extreme fallback
+    ratio = notional / (liquidity + 1e-9)
+    slippage = SLIPPAGE_ETA * (ratio ** SLIPPAGE_DELTA)
+    return float(np.clip(slippage, 0.0, 0.5))
+
+def compute_pnl_engine(df_long, df_short, start_balance=STARTING_BALANCE,
+                       fee_bps=FEE_BPS, borrow_bps_daily=BORROW_BPS_DAILY,
+                       include_slippage=True):
+    """
+    Core PnL engine. Each strategy (three long, three short, benchmark) starts with `start_balance` dollars.
+    Position fractions are applied to current equity each day. Transaction costs and borrow costs applied.
+    Returns:
+      - df_out: df with position columns and daily equity columns for each strategy (eq_position_s1, etc)
+      - equity_curves: DataFrame indexed by date with dollar balances per strategy
+    """
+    d = df_long.copy().reset_index(drop=True)
+    s = df_short.copy().reset_index(drop=True)
+    n = len(d)
+    dates = d["date"].values
+
+    long_cols = ["position_s1", "position_s2", "position_s3"]
+    short_cols = ["short_A", "short_B", "short_C"]
+
+    equity = {col: np.zeros(n, dtype=float) for col in long_cols + short_cols + ["bh"]}
+    equity_prev = {col: float(start_balance) for col in equity.keys()}
+
+    # Initialize prev position fractions
+    prev_pos = {col: 0.0 for col in long_cols + short_cols}
+
+    for t in range(n):
+        ret_t = float(d.at[t, "ret"]) if "ret" in d.columns else float(np.log(d.at[t, "Close"]) - np.log(d.at[t-1, "Close"])) if t>0 else 0.0
+
+        # Long strategies
+        for col in long_cols:
+            pos_frac = float(d.at[t, col]) if col in d.columns else 0.0
+            pos_prev = prev_pos[col]
+            turnover = abs(pos_frac - pos_prev)
+            notional_change = turnover * equity_prev[col]
+            # slippage cost as fraction of price (converted to dollar)
+            slippage_cost = 0.0
+            if include_slippage and notional_change > 0:
+                slippage_frac = slippage_model(notional_change, d.at[t, "Liquidity"])
+                slippage_cost = slippage_frac * notional_change
+            tc = turnover * (fee_bps / 1e4) * equity_prev[col] + slippage_cost
+            pnl = pos_frac * equity_prev[col] * ret_t - tc
+            equity[col][t] = equity_prev[col] + pnl
+            equity_prev[col] = equity[col][t]
+            prev_pos[col] = pos_frac
+
+        # Short strategies
+        borrow_cost_frac = borrow_bps_daily / 1e4
+        for scol in short_cols:
+            pos_frac = float(s.at[t, scol]) if scol in s.columns else 0.0
+            pos_prev = prev_pos[scol]
+            turnover = abs(pos_frac - pos_prev)
+            notional_change = turnover * equity_prev[scol]
+            slippage_cost = 0.0
+            if include_slippage and notional_change > 0:
+                slippage_frac = slippage_model(notional_change, d.at[t, "Liquidity"])
+                slippage_cost = slippage_frac * notional_change
+            tc = turnover * (fee_bps / 1e4) * equity_prev[scol] + slippage_cost
+            pnl = pos_frac * equity_prev[scol] * (-ret_t) - tc - pos_frac * equity_prev[scol] * borrow_cost_frac
+            equity[scol][t] = equity_prev[scol] + pnl
+            equity_prev[scol] = equity[scol][t]
+            prev_pos[scol] = pos_frac
+
+        # Buy & hold benchmark (compounded)
+        equity["bh"][t] = equity_prev["bh"] * np.exp(ret_t)
+        equity_prev["bh"] = equity["bh"][t]
+
+    # Build equity curves DataFrame
+    equity_curves = pd.DataFrame({k: equity[k] for k in equity.keys()}, index=dates)
+    equity_curves.index.name = "date"
+
+    # Attach equity columns to d_out for decision logs
+    d_out = d.copy()
+    for col in equity_curves.columns:
+        d_out[f"eq_{col}"] = equity_curves[col].values
+
+    return d_out, equity_curves
+
+def performance_summary(equity_curves, ann_factor=365):
+    rows = []
+    for col in equity_curves.columns:
+        ser = equity_curves[col].dropna()
+        if len(ser) < 2:
+            rows.append({"strategy": col, "cum_return": np.nan, "ann_vol": np.nan, "sharpe": np.nan, "max_drawdown": np.nan})
+            continue
+        daily_ret = ser.pct_change().fillna(0.0)
+        cum_return = (ser.iloc[-1] / ser.iloc[0]) - 1.0
+        ann_vol = daily_ret.std(ddof=0) * np.sqrt(ann_factor)
+        ann_mean = daily_ret.mean() * ann_factor
+        sharpe = (ann_mean / (ann_vol + 1e-12)) if ann_vol > 0 else np.nan
+        roll_max = ser.cummax()
+        max_dd = (ser / roll_max - 1.0).min()
+        rows.append({"strategy": col, "cum_return": cum_return, "ann_vol": ann_vol, "sharpe": sharpe, "max_drawdown": max_dd})
+    return pd.DataFrame(rows)
+# ==============================
+# Chunk 3 — Streamlit UI, Charts & Downloads
+# (Paste after Chunk 1 & Chunk 2)
+# ==============================
+
+# ---------- Sidebar controls for crash detection ----------
+st.sidebar.header("Crash Detection Controls")
+liq_threshold = st.sidebar.slider("Liquidity drop threshold (relative)", min_value=0.01, max_value=1.0, value=0.30, step=0.01)
+sd_threshold = st.sidebar.slider("Supply-Demand threshold (negative = selling)", min_value=-1.0, max_value=0.0, value=-0.20, step=0.01)
+run_button = st.sidebar.button("Run Backtest & Compute")
+
+# ---------- Input for symbol and date range ----------
+st.sidebar.header("Data Selection (yfinance)")
+symbol = st.sidebar.text_input("Ticker (yfinance)", value="BTC-USD")
+end_date = st.sidebar.date_input("End date", value=datetime.utcnow().date())
+start_date = st.sidebar.date_input("Start date", value=(end_date - timedelta(days=365)))
+if start_date >= end_date:
+    st.sidebar.error("Start date must be before end date.")
+
+# ---------- Run pipeline ----------
+if run_button:
+    with st.spinner("Downloading data and building signals..."):
+        try:
+            raw_df = download_data(symbol, start=start_date, end=end_date + timedelta(days=1))
+        except Exception as e:
+            st.error(f"Data download failed: {e}")
+            st.stop()
+
+        if raw_df.empty:
+            st.error("No data returned for symbol / date-range.")
+            st.stop()
+
+        # Rename to match expected columns in other chunks
+        raw_df = raw_df.reset_index().rename(columns={"Date": "date", "Adj Close": "Close"})
+        # Ensure Open column exists (yfinance has it)
+        if "Open" not in raw_df.columns:
+            raw_df["Open"] = raw_df["Close"].shift(1).fillna(method="bfill")
+
+        # Compute liquidity & supply-demand (uses 600 window by default to match earlier spec)
+        df_proc = compute_liquidity(raw_df.copy(), window=600)
+        df_proc = compute_supply_demand(df_proc.copy(), window=600)
+
+        # Detect crash signals using user-controlled thresholds
+        df_proc = detect_crash_signal(df_proc.copy(), liq_threshold=liq_threshold, sd_threshold=sd_threshold)
+
+        # Build strategy exposures
+        df_long = build_long_strategies(df_proc.copy())
+        df_short = build_short_strategies(df_proc.copy())
+
+        # Compute PnL & equity curves
+        bt_out, equity_curves = compute_pnl_engine(df_long, df_short, start_balance=STARTING_BALANCE,
+                                                   fee_bps=FEE_BPS, borrow_bps_daily=BORROW_BPS_DAILY,
+                                                   include_slippage=True)
+
+    # ---------- Main layout: top row ----------
+    st.markdown("## Price, Liquidity & Crash Signals")
+    col1, col2 = st.columns([2, 1])
+
+    # Price + CrashSignal
+    with col1:
+        fig, ax = plt.subplots(2, 1, figsize=(12, 6), sharex=True,
+                               gridspec_kw={"height_ratios": [3, 1]})
+        ax[0].plot(df_proc["date"], df_proc["Close"], label=f"{symbol} Price")
+        ax[0].set_ylabel("Price")
+        ax[0].legend(loc="upper left")
+        # highlight crash-signal days
+        sig_dates = df_proc.loc[df_proc["CrashSignal"] == 1, "date"]
+        if not sig_dates.empty:
+            ax[0].scatter(sig_dates, df_proc.loc[df_proc["CrashSignal"] == 1, "Close"], color="red", label="CrashSignal", zorder=5)
+            ax[0].legend()
+
+        # Liquidity plot
+        ax[1].plot(df_proc["date"], df_proc["Liquidity"], label="Liquidity (proxy)")
+        ax[1].axhline(df_proc["Liquidity"].quantile(0.2), color="orange", linestyle="--", label="20%-liq-quantile")
+        ax[1].set_ylabel("Liquidity")
+        ax[1].legend(loc="upper left")
+
+        st.pyplot(fig)
+
+    # Quick stats in right column
+    with col2:
+        st.write("### Snapshot")
+        last = df_proc.iloc[-1]
+        st.metric("Price (last)", f"{last['Close']:.4f}")
+        st.metric("Liquidity (last)", f"{last['Liquidity']:.2e}")
+        st.metric("Supply-Demand (last)", f"{last['SupplyDemand']:.4f}")
+        st.markdown("**CrashSignal (last)**: " + ("YES" if last["CrashSignal"] == 1 else "no"))
+
+    # ---------- Equity curves and performance ----------
+    st.markdown("## Equity Curves (each strategy starts with $600)")
+    st.line_chart(equity_curves, use_container_width=True)
+
+    perf_df = performance_summary(equity_curves)
+    st.markdown("### Performance Summary")
+    st.dataframe(perf_df.style.format({
+        "cum_return": "{:.2%}",
+        "ann_vol": "{:.2f}",
+        "sharpe": "{:.2f}",
+        "max_drawdown": "{:.2%}"
+    }), use_container_width=True)
+
+    # ---------- Decision log & downloads ----------
+    st.markdown("## Decision Log and Exports")
+    decision_log = bt_out[[
+        "date", "Close", "Liquidity", "SupplyDemand", "CrashSignal",
+        "position_s1", "position_s2", "position_s3",
+        "short_A", "short_B", "short_C"
+    ]].copy()
+    # Add forward return & crash flag
+    decision_log[f"fwd_{int(H)}d_return"] = bt_out["Close"].shift(-int(H)) / bt_out["Close"] - 1.0
+    decision_log[f"fwd_{int(H)}d_crash"] = (decision_log[f"fwd_{int(H)}d_return"] <= -crash_pct).astype(int)
+
+    st.dataframe(decision_log.tail(50), use_container_width=True)
+    csv_decision = decision_log.to_csv(index=False)
+    st.download_button("Download decision log CSV", data=csv_decision, file_name="decision_log.csv", mime="text/csv")
+
+    csv_eq = equity_curves.reset_index().to_csv(index=False)
+    st.download_button("Download equity curves CSV", data=csv_eq, file_name="equity_curves.csv", mime="text/csv")
+
+    # ---------- Additional visualizations ----------
+    st.markdown("## Signal Diagnostics")
+    col3, col4 = st.columns(2)
+    with col3:
+        st.line_chart(df_proc.set_index("date")[["Liquidity"]].rename(columns={"Liquidity": "Liquidity (proxy)"}), use_container_width=True)
+    with col4:
+        st.bar_chart(decision_log.set_index("date")[[f"fwd_{int(H)}d_crash"]].astype(int), use_container_width=True)
+
+    st.success("Backtest complete. Use sidebar to tweak thresholds or date range and re-run.")
+
+else:
+    st.info("Set parameters and click **Run Backtest & Compute** in the sidebar.")
+
+# ==============================
+# Chunk 3 — Streamlit UI, Charts & Downloads
+# (Paste after Chunk 1 & Chunk 2)
+# ==============================
+
+# ---------- Sidebar controls for crash detection ----------
+st.sidebar.header("Crash Detection Controls")
+liq_threshold = st.sidebar.slider("Liquidity drop threshold (relative)", min_value=0.01, max_value=1.0, value=0.30, step=0.01)
+sd_threshold = st.sidebar.slider("Supply-Demand threshold (negative = selling)", min_value=-1.0, max_value=0.0, value=-0.20, step=0.01)
+run_button = st.sidebar.button("Run Backtest & Compute")
+
+# ---------- Input for symbol and date range ----------
+st.sidebar.header("Data Selection (yfinance)")
+symbol = st.sidebar.text_input("Ticker (yfinance)", value="BTC-USD")
+end_date = st.sidebar.date_input("End date", value=datetime.utcnow().date())
+start_date = st.sidebar.date_input("Start date", value=(end_date - timedelta(days=365)))
+if start_date >= end_date:
+    st.sidebar.error("Start date must be before end date.")
+
+# ---------- Run pipeline ----------
+if run_button:
+    with st.spinner("Downloading data and building signals..."):
+        try:
+            raw_df = download_data(symbol, start=start_date, end=end_date + timedelta(days=1))
+        except Exception as e:
+            st.error(f"Data download failed: {e}")
+            st.stop()
+
+        if raw_df.empty:
+            st.error("No data returned for symbol / date-range.")
+            st.stop()
+
+        # Rename to match expected columns in other chunks
+        raw_df = raw_df.reset_index().rename(columns={"Date": "date", "Adj Close": "Close"})
+        # Ensure Open column exists (yfinance has it)
+        if "Open" not in raw_df.columns:
+            raw_df["Open"] = raw_df["Close"].shift(1).fillna(method="bfill")
+
+        # Compute liquidity & supply-demand (uses 600 window by default to match earlier spec)
+        df_proc = compute_liquidity(raw_df.copy(), window=600)
+        df_proc = compute_supply_demand(df_proc.copy(), window=600)
+
+        # Detect crash signals using user-controlled thresholds
+        df_proc = detect_crash_signal(df_proc.copy(), liq_threshold=liq_threshold, sd_threshold=sd_threshold)
+
+        # Build strategy exposures
+        df_long = build_long_strategies(df_proc.copy())
+        df_short = build_short_strategies(df_proc.copy())
+
+        # Compute PnL & equity curves
+        bt_out, equity_curves = compute_pnl_engine(df_long, df_short, start_balance=STARTING_BALANCE,
+                                                   fee_bps=FEE_BPS, borrow_bps_daily=BORROW_BPS_DAILY,
+                                                   include_slippage=True)
+
+    # ---------- Main layout: top row ----------
+    st.markdown("## Price, Liquidity & Crash Signals")
+    col1, col2 = st.columns([2, 1])
+
+    # Price + CrashSignal
+    with col1:
+        fig, ax = plt.subplots(2, 1, figsize=(12, 6), sharex=True,
+                               gridspec_kw={"height_ratios": [3, 1]})
+        ax[0].plot(df_proc["date"], df_proc["Close"], label=f"{symbol} Price")
+        ax[0].set_ylabel("Price")
+        ax[0].legend(loc="upper left")
+        # highlight crash-signal days
+        sig_dates = df_proc.loc[df_proc["CrashSignal"] == 1, "date"]
+        if not sig_dates.empty:
+            ax[0].scatter(sig_dates, df_proc.loc[df_proc["CrashSignal"] == 1, "Close"], color="red", label="CrashSignal", zorder=5)
+            ax[0].legend()
+
+        # Liquidity plot
+        ax[1].plot(df_proc["date"], df_proc["Liquidity"], label="Liquidity (proxy)")
+        ax[1].axhline(df_proc["Liquidity"].quantile(0.2), color="orange", linestyle="--", label="20%-liq-quantile")
+        ax[1].set_ylabel("Liquidity")
+        ax[1].legend(loc="upper left")
+
+        st.pyplot(fig)
+
+    # Quick stats in right column
+    with col2:
+        st.write("### Snapshot")
+        last = df_proc.iloc[-1]
+        st.metric("Price (last)", f"{last['Close']:.4f}")
+        st.metric("Liquidity (last)", f"{last['Liquidity']:.2e}")
+        st.metric("Supply-Demand (last)", f"{last['SupplyDemand']:.4f}")
+        st.markdown("**CrashSignal (last)**: " + ("YES" if last["CrashSignal"] == 1 else "no"))
+
+    # ---------- Equity curves and performance ----------
+    st.markdown("## Equity Curves (each strategy starts with $600)")
+    st.line_chart(equity_curves, use_container_width=True)
+
+    perf_df = performance_summary(equity_curves)
+    st.markdown("### Performance Summary")
+    st.dataframe(perf_df.style.format({
+        "cum_return": "{:.2%}",
+        "ann_vol": "{:.2f}",
+        "sharpe": "{:.2f}",
+        "max_drawdown": "{:.2%}"
+    }), use_container_width=True)
+
+    # ---------- Decision log & downloads ----------
+    st.markdown("## Decision Log and Exports")
+    decision_log = bt_out[[
+        "date", "Close", "Liquidity", "SupplyDemand", "CrashSignal",
+        "position_s1", "position_s2", "position_s3",
+        "short_A", "short_B", "short_C"
+    ]].copy()
+    # Add forward return & crash flag
+    decision_log[f"fwd_{int(H)}d_return"] = bt_out["Close"].shift(-int(H)) / bt_out["Close"] - 1.0
+    decision_log[f"fwd_{int(H)}d_crash"] = (decision_log[f"fwd_{int(H)}d_return"] <= -crash_pct).astype(int)
+
+    st.dataframe(decision_log.tail(50), use_container_width=True)
+    csv_decision = decision_log.to_csv(index=False)
+    st.download_button("Download decision log CSV", data=csv_decision, file_name="decision_log.csv", mime="text/csv")
+
+    csv_eq = equity_curves.reset_index().to_csv(index=False)
+    st.download_button("Download equity curves CSV", data=csv_eq, file_name="equity_curves.csv", mime="text/csv")
+
+    # ---------- Additional visualizations ----------
+    st.markdown("## Signal Diagnostics")
+    col3, col4 = st.columns(2)
+    with col3:
+        st.line_chart(df_proc.set_index("date")[["Liquidity"]].rename(columns={"Liquidity": "Liquidity (proxy)"}), use_container_width=True)
+    with col4:
+        st.bar_chart(decision_log.set_index("date")[[f"fwd_{int(H)}d_crash"]].astype(int), use_container_width=True)
+
+    st.success("Backtest complete. Use sidebar to tweak thresholds or date range and re-run.")
+
+else:
+    st.info("Set parameters and click **Run Backtest & Compute** in the sidebar.")
+    
