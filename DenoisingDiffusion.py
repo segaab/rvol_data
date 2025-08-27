@@ -114,6 +114,7 @@ L_min_ratio = st.sidebar.number_input("Liquidity min ratio", value=0.10, min_val
 I_crit = st.sidebar.number_input("Imbalance threshold", value=0.20, min_value=0.01, max_value=2.0, step=0.01, format="%.2f")
 persist_days = st.sidebar.number_input("Persistence days (liquidity crash)", value=3, min_value=1, max_value=30)
 
+
 # ---------------------------
 # Chunk 2: Simulation and rolling crash probabilities
 # ---------------------------
@@ -201,25 +202,22 @@ df_ed["ECDS"] = (
 )
 df_ed["ECDS"] += 0.2 * df_ed["vol_z"] + 0.2 * df_ed["prob_slope_z"] + 0.1 * df_ed["liq_slope_z"]
 st.line_chart(df_ed.set_index("date")[["ECDS"]], use_container_width=True)
-    
+
 # ---------------------------
 # Chunk 3: Long/Short positions, PnL, decision log, performance
 # ---------------------------
 
 # ---------------------------
-# Long strategies
+# Long-side strategies
 # ---------------------------
 st.subheader("Long-side strategies")
 
 with st.sidebar.expander("Long strategy parameters", expanded=True):
-    # Strategy 1
     T1 = st.number_input("S1: Crash prob threshold", value=0.30, min_value=0.0, max_value=1.0, step=0.05)
     q_liq = st.number_input("S1: Liquidity percentile q", value=0.20, min_value=0.0, max_value=1.0, step=0.05)
-    # Strategy 2
     k_mom = st.number_input("S2: Momentum lookback", value=20, min_value=5, max_value=120, step=5)
     T2 = st.number_input("S2: Crash prob soft threshold", value=0.25, min_value=0.0, max_value=1.0, step=0.05)
     reduce_factor = st.number_input("S2: Size reduce factor", value=0.5, min_value=0.0, max_value=1.0, step=0.1)
-    # Strategy 3
     T3 = st.number_input("S3: Posterior mean threshold", value=0.35, min_value=0.0, max_value=1.0, step=0.05)
     cred_level = st.number_input("S3: Credible level", value=0.95, min_value=0.5, max_value=0.999, step=0.01)
 
@@ -227,21 +225,22 @@ df_long = df_ed.copy()
 df_long["mom_k"] = df_long["price"] / df_long["price"].shift(int(k_mom)) - 1.0
 liq_thresh = df_long["liquidity"].quantile(q_liq)
 
-# Bayesian rolling posterior
 def rolling_beta_posterior(probs: pd.Series, window: int = 30, a0: float = 1.0, b0: float = 1.0, cred: float = 0.95):
     means, lowers, uppers = [], [], []
     for i in range(len(probs)):
         lo = max(0, i - window + 1)
-        p_slice = probs.iloc[lo : i + 1].fillna(0).clip(0, 1)
+        p_slice = probs.iloc[lo:i+1].fillna(0).clip(0,1)
         succ = p_slice.sum()
         trials = len(p_slice)
         a = a0 + succ
         b = b0 + (trials - succ)
         mean = a / (a + b)
-        var = (a * b) / (((a + b) ** 2) * (a + b + 1))
-        z = norm.ppf(0.5 + cred / 2.0)
+        var = (a * b) / (((a + b)**2) * (a + b + 1))
+        z = norm.ppf(0.5 + cred/2)
         se = np.sqrt(var)
-        means.append(mean); lowers.append(mean - z * se); uppers.append(mean + z * se)
+        means.append(mean)
+        lowers.append(mean - z*se)
+        uppers.append(mean + z*se)
     return pd.DataFrame({"post_mean": means, "post_low": lowers, "post_high": uppers}, index=probs.index)
 
 post_df = rolling_beta_posterior(df_long["pred_crash_prob"], window=30, cred=cred_level)
@@ -251,12 +250,12 @@ def build_long_positions(d: pd.DataFrame) -> pd.DataFrame:
     x["position_s1"] = 600.0
     x["position_s2"] = 600.0
     x["position_s3"] = 600.0
-    # S1: Liquidity Guardrail
+    # S1
     x.loc[(x["pred_crash_prob"] > T1) & (x["liquidity"] <= liq_thresh), "position_s1"] = 0.0
-    # S2: Momentum + Liquidity Filter
+    # S2
     x.loc[(x["mom_k"] > 0) & (x["liquidity"] > x["liquidity"].median()), "position_s2"] = 600.0
     x.loc[x["pred_crash_prob"] > T2, "position_s2"] *= reduce_factor
-    # S3: Bayesian threshold
+    # S3
     x["post_mean"] = post_df["post_mean"].reindex(x.index).values
     x.loc[x["post_mean"] > T3, "position_s3"] = 0.0
     return x
@@ -266,7 +265,7 @@ long_bt = build_long_positions(df_long)
 # ---------------------------
 # Short-entry strategies
 # ---------------------------
-st.subheader("Short-entry strategies (early detection)")
+st.subheader("Short-entry strategies")
 
 liq_q_thresh_A = df_long["liquidity"].quantile(A_confirm_liq_q)
 
@@ -276,9 +275,7 @@ def build_short_positions(d: pd.DataFrame) -> pd.DataFrame:
     x["short_B"] = 0.0
     x["short_C"] = 0.0
 
-    cond_A = (x["ECDS"] >= A_threshold) & \
-             (x["pred_crash_prob"] >= A_confirm_prob) & \
-             (x["liquidity"] <= liq_q_thresh_A)
+    cond_A = (x["ECDS"] >= A_threshold) & (x["pred_crash_prob"] >= A_confirm_prob) & (x["liquidity"] <= liq_q_thresh_A)
     x.loc[cond_A, "short_A"] = 600.0
 
     cond_B = (x["vol_z"] >= B_vol_z) & (x["liq_inv_z"] >= B_liq_inv_z) & (x["prob_slope_z"] >= B_prob_slope_z)
@@ -296,83 +293,30 @@ def build_short_positions(d: pd.DataFrame) -> pd.DataFrame:
 short_bt = build_short_positions(df_long)
 
 # ---------------------------
-# PnL computation (long and short)
+# PnL computation
 # ---------------------------
 def compute_pnl(long_df: pd.DataFrame, fee_bps: float = 5.0, borrow_bps_daily: float = 1.0):
     d = long_df.copy()
     d["ret"] = d["ret"].fillna(0.0)
     for col in ["position_s1", "position_s2", "position_s3"]:
-        pos = d[col].fillna(0.0).values / 600.0  # normalize to units
-        pos_shift = np.roll(pos, 1); pos_shift[0] = 0.0
+        pos = d[col].fillna(0.0).values / 600.0
+        pos_shift = np.roll(pos,1); pos_shift[0]=0.0
         turnover = np.abs(pos - pos_shift)
-        tc = turnover * (fee_bps / 1e4)
+        tc = turnover * (fee_bps/1e4)
         d[f"{col}_pnl"] = pos * d["ret"] - tc
 
-    borrow_cost = borrow_bps_daily / 1e4
+    borrow_cost = borrow_bps_daily/1e4
     for scol in ["short_A", "short_B", "short_C"]:
         pos = short_bt[scol].reindex(d.index).fillna(0.0).values / 600.0
-        pos_shift = np.roll(pos, 1); pos_shift[0] = 0.0
+        pos_shift = np.roll(pos,1); pos_shift[0]=0.0
         turnover = np.abs(pos - pos_shift)
-        tc = turnover * (fee_bps / 1e4)
+        tc = turnover * (fee_bps/1e4)
         d[f"{scol}_pnl"] = pos * (-d["ret"]) - tc - pos * borrow_cost
 
     d["bh_pnl"] = d["ret"]
-    eq = d.set_index("date")[[
-        "position_s1_pnl", "position_s2_pnl", "position_s3_pnl",
-        "short_A_pnl", "short_B_pnl", "short_C_pnl",
-        "bh_pnl"
-    ]].cumsum().apply(np.exp)
+    eq = d.set_index("date")[[f"{c}_pnl" for c in ["position_s1","position_s2","position_s3","short_A","short_B","short_C"]] + ["bh_pnl"]].cumsum().apply(np.exp)
     return d, eq
 
 bt_row, equity_curves = compute_pnl(long_bt)
 st.subheader("Equity curves (normalized)")
 st.line_chart(equity_curves, use_container_width=True)
-
-# ---------------------------
-# Decision log
-# ---------------------------
-def build_decision_log(d: pd.DataFrame) -> pd.DataFrame:
-    log = d[[
-        "date","price","liquidity","imbalance","ret",
-        "pred_crash_prob","ECDS","vol","liq_inv","prob_slope","neg_mom",
-        "position_s1","position_s2","position_s3"
-    ]].copy()
-    log["short_A"] = short_bt["short_A"].reindex(log.index).values
-    log["short_B"] = short_bt["short_B"].reindex(log.index).values
-    log["short_C"] = short_bt["short_C"].reindex(log.index).values
-    fwd = d["price"].shift(-int(H)) / d["price"] - 1.0
-    log[f"fwd_return_{int(H)}d"] = fwd
-    log[f"fwd_crash_{int(H)}d"] = (fwd <= -crash_pct).astype(int)
-    return log
-
-decision_log = build_decision_log(long_bt)
-with st.expander("Decision log (exportable)"):
-    st.dataframe(decision_log.tail(20), use_container_width=True)
-    st.download_button("Download decision log CSV", data=decision_log.to_csv(index=False), file_name="decision_log.csv", mime="text/csv")
-
-# ---------------------------
-# Performance summary
-# ---------------------------
-def summarize_performance(d: pd.DataFrame, eq: pd.DataFrame) -> pd.DataFrame:
-    ann_factor = 365
-    pnl_cols = [
-        "position_s1_pnl", "position_s2_pnl", "position_s3_pnl",
-        "short_A_pnl", "short_B_pnl", "short_C_pnl",
-        "bh_pnl"
-    ]
-    rows = []
-    for col in pnl_cols:
-        r = d[col].fillna(0.0)
-        cum = np.exp(r.cumsum().iloc[-1]) - 1.0
-        vol = r.std() * np.sqrt(ann_factor)
-        sharpe = (r.mean() * ann_factor) / (vol + 1e-12)
-        curve = eq[col]
-        mdd = (curve.cummax() / curve - 1.0).max()
-        rows.append({"strategy": col.replace("_pnl",""), "cum_return": cum, "ann_vol": vol, "sharpe": sharpe, "max_drawdown": mdd})
-    return pd.DataFrame(rows)
-
-perf = summarize_performance(bt_row, equity_curves)
-st.subheader("Performance summary (long and short)")
-st.dataframe(
-    perf.style.format({"cum_return": "{:.1%}", "ann_vol": "{:.2f}", "sh
-    
