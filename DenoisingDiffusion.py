@@ -201,7 +201,7 @@ df_ed["ECDS"] = (
 )
 df_ed["ECDS"] += 0.2 * df_ed["vol_z"] + 0.2 * df_ed["prob_slope_z"] + 0.1 * df_ed["liq_slope_z"]
 st.line_chart(df_ed.set_index("date")[["ECDS"]], use_container_width=True)
-
+    
 # ---------------------------
 # Chunk 3: Long/Short positions, PnL, decision log, performance
 # ---------------------------
