@@ -12,3 +12,4 @@ requests
 numpy
 feedparser
 requests_oauthlib
+scipy
